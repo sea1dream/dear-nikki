@@ -55,7 +55,7 @@ export const navBarConfig: NavBarConfig = {
     ],
     logo: {
         image: true, // Display an image as logo on the navbar
-        src: "assets/images/demo-logo.png", // Relative to the /src directory. Relative to the /public directory if it starts with '/'
+        src: "assets/images/moon.png", // Relative to the /src directory. Relative to the /public directory if it starts with '/'
     },
 };
 
