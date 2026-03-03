@@ -8,7 +8,7 @@ import type {
 import { LinkPreset } from "./types/config";
 
 export const siteConfig: SiteConfig = {
-    title: "seadream",
+    title: "lyjykx99",
     subtitle: "liyijieykx99",
     lang: "zh_CN", // Language code, e.g. 'en', 'zh_CN', 'ja', etc.
     themeColor: {
