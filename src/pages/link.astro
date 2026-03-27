@@ -1,0 +1,55 @@
+---
+import I18nKey from "../i18n/i18nKey";
+import { i18n } from "../i18n/translation";
+import MainGridLayout from "../layouts/MainGridLayout.astro";
+
+const friendsData = [
+    {
+        name: " xNftrOne",
+        url: "https://www.cnblogs.com/xNftrOne",
+        avatar: "https://ooo.0x0.ooo/2025/05/27/OdV7Q6.jpg",
+        description: "hamburger方向创始人",
+    },
+
+];
+// ============================================
+---
+
+<MainGridLayout title={i18n(I18nKey.link)} description={i18n(I18nKey.link)}>
+    <div
+            class="flex w-full rounded-[var(--radius-large)] overflow-hidden relative min-h-32"
+    >
+        <div class="card-base z-10 px-9 py-6 relative w-full">
+            <h1 class="text-2xl font-bold mb-4">友情链接</h1>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {
+                    friendsData.map((friend) => (
+                            <a
+                                    href={friend.url}
+                                    target="_blank"
+                                    class="group flex items-center p-4 rounded-lg bg-[var(--card-bg)] border border-black/5 dark:border-white/10 hover:bg-[var(--btn-plain-bg-hover)] transition-all duration-300 decoration-none no-underline"
+                            >
+                                <div class="flex-shrink-0 mr-4">
+                                    <img
+                                            src={friend.avatar}
+                                            alt={friend.name}
+                                            class="w-16 h-16 rounded-full object-cover border-2 border-white/20 group-hover:rotate-12 transition-transform duration-300"
+                                    />
+                                </div>
+
+                                <div class="overflow-hidden">
+                                    <h3 class="font-bold text-lg truncate group-hover:text-[var(--primary)] transition-colors">
+                                        {friend.name}
+                                    </h3>
+                                    <p class="text-sm opacity-60 line-clamp-2 mt-1">
+                                        {friend.description}
+                                    </p>
+                                </div>
+                            </a>
+                    ))
+                }
+            </div>
+        </div>
+    </div>
+</MainGridLayout>
