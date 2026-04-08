@@ -1,0 +1,286 @@
+---
+import I18nKey from "../../i18n/i18nKey";
+import { i18n } from "../../i18n/translation";
+import WidgetLayout from "./WidgetLayout.astro";
+
+interface Props {
+    class?: string;
+    style?: string;
+}
+
+const { class: className = "", style } = Astro.props;
+---
+
+<WidgetLayout
+    name={i18n(I18nKey.siteStats)}
+    id="site-stats"
+    class={className}
+    style={style}
+>
+    <site-stats-widget
+        data-counter-namespace="dear-nikki-sea1dream-stats"
+        data-timezone="Asia/Shanghai"
+        data-stats-unavailable={i18n(I18nKey.statsUnavailable)}
+    >
+        <div class="grid gap-2">
+            <div class="flex items-center justify-between rounded-2xl bg-[var(--btn-regular-bg)] px-4 py-3">
+                <span class="text-sm text-50">{i18n(I18nKey.totalVisits)}</span>
+                <span
+                    data-value="totalVisits"
+                    class="text-lg font-semibold text-90 tabular-nums"
+                >
+                    --
+                </span>
+            </div>
+
+            <div class="flex items-center justify-between rounded-2xl bg-[var(--btn-regular-bg)] px-4 py-3">
+                <span class="text-sm text-50">{i18n(I18nKey.todayVisits)}</span>
+                <span
+                    data-value="todayVisits"
+                    class="text-lg font-semibold text-90 tabular-nums"
+                >
+                    --
+                </span>
+            </div>
+
+            <div class="flex items-center justify-between rounded-2xl bg-[var(--btn-regular-bg)] px-4 py-3">
+                <span class="text-sm text-50">{i18n(I18nKey.todayVisitors)}</span>
+                <span
+                    data-value="todayVisitors"
+                    class="text-lg font-semibold text-90 tabular-nums"
+                >
+                    --
+                </span>
+            </div>
+        </div>
+
+        <p
+            data-status
+            class="hidden px-1 pt-2 text-xs text-50"
+            aria-live="polite"
+        ></p>
+    </site-stats-widget>
+</WidgetLayout>
+
+<script>
+    type CounterAction = "get" | "up";
+    type StatKey = "totalVisits" | "todayVisits" | "todayVisitors";
+    type MemoryStore = Record<string, string>;
+
+    class SiteStatsWidget extends HTMLElement {
+        private lastTrackedPath = "";
+        private requestSerial = 0;
+
+        private readonly handlePageLoad = () => {
+            void this.refreshStats();
+        };
+
+        connectedCallback() {
+            document.addEventListener("astro:page-load", this.handlePageLoad);
+            void this.refreshStats();
+        }
+
+        disconnectedCallback() {
+            document.removeEventListener("astro:page-load", this.handlePageLoad);
+        }
+
+        private async refreshStats() {
+            const currentPath = `${window.location.pathname}${window.location.search}`;
+            if (currentPath === this.lastTrackedPath) {
+                return;
+            }
+
+            this.lastTrackedPath = currentPath;
+            const requestId = ++this.requestSerial;
+            this.setStatus("");
+
+            const stats = await this.collectStats();
+            if (requestId !== this.requestSerial) {
+                return;
+            }
+
+            if (!stats) {
+                this.setStatus(
+                    this.dataset.statsUnavailable ?? "Statistics unavailable",
+                );
+                return;
+            }
+
+            this.setValue("totalVisits", stats.totalVisits);
+            this.setValue("todayVisits", stats.todayVisits);
+            this.setValue("todayVisitors", stats.todayVisitors);
+        }
+
+        private async collectStats(): Promise<Record<StatKey, number> | null> {
+            const namespace = this.getNamespace();
+            const dateKey = this.getDateKey();
+
+            const [totalVisits, todayVisits, todayVisitors] = await Promise.all([
+                this.fetchCounter(namespace, "pageviews-total", "up"),
+                this.fetchCounter(namespace, `pageviews-${dateKey}`, "up"),
+                this.fetchTodayVisitors(namespace, dateKey),
+            ]);
+
+            if (
+                totalVisits === null ||
+                todayVisits === null ||
+                todayVisitors === null
+            ) {
+                return null;
+            }
+
+            return {
+                totalVisits,
+                todayVisits,
+                todayVisitors,
+            };
+        }
+
+        private async fetchTodayVisitors(
+            namespace: string,
+            dateKey: string,
+        ): Promise<number | null> {
+            const counterName = `visitors-${dateKey}`;
+            const storageKey = `${namespace}:visitors:${dateKey}`;
+            const hasCountedToday = this.readStorage(storageKey) === "1";
+
+            if (!hasCountedToday) {
+                const count = await this.fetchCounter(namespace, counterName, "up");
+                if (count !== null) {
+                    this.writeStorage(storageKey, "1");
+                }
+                return count;
+            }
+
+            const count = await this.fetchCounter(namespace, counterName, "get");
+            if (count !== null) {
+                return count;
+            }
+
+            const fallbackCount = await this.fetchCounter(
+                namespace,
+                counterName,
+                "up",
+            );
+            if (fallbackCount !== null) {
+                this.writeStorage(storageKey, "1");
+            }
+            return fallbackCount;
+        }
+
+        private async fetchCounter(
+            namespace: string,
+            name: string,
+            action: CounterAction,
+        ): Promise<number | null> {
+            const encodedNamespace = encodeURIComponent(namespace);
+            const encodedName = encodeURIComponent(name);
+            const counterUrl =
+                action === "up"
+                    ? `https://api.counterapi.dev/v1/${encodedNamespace}/${encodedName}/up`
+                    : `https://api.counterapi.dev/v1/${encodedNamespace}/${encodedName}/`;
+
+            try {
+                const response = await fetch(counterUrl, {
+                    cache: "no-store",
+                });
+
+                if (!response.ok) {
+                    return null;
+                }
+
+                const data = (await response.json()) as { count?: number };
+                return typeof data.count === "number" ? data.count : null;
+            } catch (error) {
+                console.error("Failed to load site statistics", error);
+                return null;
+            }
+        }
+
+        private getNamespace() {
+            const baseNamespace =
+                this.dataset.counterNamespace ?? "dear-nikki-sea1dream-stats";
+            const hostname = window.location.hostname;
+            const isLocalHost =
+                hostname === "localhost" ||
+                hostname === "127.0.0.1" ||
+                hostname === "::1";
+
+            return isLocalHost ? `${baseNamespace}-local` : baseNamespace;
+        }
+
+        private getDateKey() {
+            const formatter = new Intl.DateTimeFormat("en-CA", {
+                timeZone: this.dataset.timezone ?? "Asia/Shanghai",
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+            });
+
+            return formatter.format(new Date());
+        }
+
+        private formatNumber(value: number) {
+            return new Intl.NumberFormat(
+                document.documentElement.lang || "zh-CN",
+            ).format(value);
+        }
+
+        private setValue(key: StatKey, value: number) {
+            const node = this.querySelector<HTMLElement>(`[data-value="${key}"]`);
+            if (!node) {
+                return;
+            }
+
+            node.textContent = this.formatNumber(value);
+        }
+
+        private setStatus(message: string) {
+            const statusNode = this.querySelector<HTMLElement>("[data-status]");
+            if (!statusNode) {
+                return;
+            }
+
+            if (!message) {
+                statusNode.textContent = "";
+                statusNode.classList.add("hidden");
+                return;
+            }
+
+            statusNode.textContent = message;
+            statusNode.classList.remove("hidden");
+        }
+
+        private readStorage(key: string) {
+            try {
+                return window.localStorage.getItem(key);
+            } catch {
+                return this.getMemoryStore()[key] ?? null;
+            }
+        }
+
+        private writeStorage(key: string, value: string) {
+            try {
+                window.localStorage.setItem(key, value);
+            } catch {
+                this.getMemoryStore()[key] = value;
+            }
+        }
+
+        private getMemoryStore() {
+            const storeWindow = window as Window & {
+                __DEAR_NIKKI_SITE_STATS__?: MemoryStore;
+            };
+
+            if (!storeWindow.__DEAR_NIKKI_SITE_STATS__) {
+                storeWindow.__DEAR_NIKKI_SITE_STATS__ = {};
+            }
+
+            return storeWindow.__DEAR_NIKKI_SITE_STATS__;
+        }
+    }
+
+    if (!customElements.get("site-stats-widget")) {
+        customElements.define("site-stats-widget", SiteStatsWidget);
+    }
+</script>

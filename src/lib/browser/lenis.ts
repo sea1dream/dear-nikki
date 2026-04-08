@@ -3,7 +3,7 @@ import { siteConfig } from "@/config";
 
 declare global {
     interface Window {
-        lenis?: InstanceType<typeof Lenis>;
+        __DEAR_NIKKI_LENIS__?: InstanceType<typeof Lenis>;
     }
 }
 
@@ -20,8 +20,8 @@ export function destroyLenis() {
     }
     lenis?.destroy();
     lenis = null;
-    if (window.lenis) {
-        delete window.lenis;
+    if (window.__DEAR_NIKKI_LENIS__) {
+        delete window.__DEAR_NIKKI_LENIS__;
     }
 }
 
@@ -50,7 +50,7 @@ export function initLenis() {
         smoothWheel: true,
     });
 
-    window.lenis = lenis;
+    window.__DEAR_NIKKI_LENIS__ = lenis;
 
     startLenisRaf();
 }

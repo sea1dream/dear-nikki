@@ -10,6 +10,7 @@ export const en: Translation = {
 
     [Key.tags]: "Tags",
     [Key.categories]: "Categories",
+    [Key.siteStats]: "Site Stats",
     [Key.recentPosts]: "Recent Posts",
 
     [Key.comments]: "Comments",
@@ -22,6 +23,9 @@ export const en: Translation = {
     [Key.wordsCount]: "words",
     [Key.minuteCount]: "minute",
     [Key.minutesCount]: "minutes",
+    [Key.totalVisits]: "Total Visits",
+    [Key.todayVisits]: "Today's Visits",
+    [Key.todayVisitors]: "Today's Visitors",
     [Key.postCount]: "post",
     [Key.postsCount]: "posts",
 
@@ -47,4 +51,5 @@ export const en: Translation = {
         "The {ENTRY} content entry could not be found. If you are an administrator, please add {FILE} or update the content configuration.",
 
     [Key.imageLoadError]: "Failed to load image",
+    [Key.statsUnavailable]: "Statistics are temporarily unavailable",
 };

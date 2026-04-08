@@ -10,6 +10,7 @@ export const zh_CN: Translation = {
 
     [Key.tags]: "标签",
     [Key.categories]: "分类",
+    [Key.siteStats]: "访问统计",
     [Key.recentPosts]: "最新文章",
 
     [Key.comments]: "评论",
@@ -22,6 +23,9 @@ export const zh_CN: Translation = {
     [Key.wordsCount]: "字",
     [Key.minuteCount]: "分钟",
     [Key.minutesCount]: "分钟",
+    [Key.totalVisits]: "累计访问量",
+    [Key.todayVisits]: "今日访问量",
+    [Key.todayVisitors]: "今日访客数",
     [Key.postCount]: "篇文章",
     [Key.postsCount]: "篇文章",
 
@@ -45,4 +49,5 @@ export const zh_CN: Translation = {
     [Key.aboutMissingDescription]:
         "未找到 {ENTRY} 内容条目。如您为管理员，请添加 {FILE} 或更新内容配置。",
     [Key.imageLoadError]: "图片加载失败",
+    [Key.statsUnavailable]: "统计服务暂时不可用",
 };

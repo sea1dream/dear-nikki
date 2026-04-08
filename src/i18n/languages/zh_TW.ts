@@ -5,10 +5,12 @@ export const zh_TW: Translation = {
     [Key.home]: "首頁",
     [Key.about]: "關於",
     [Key.archive]: "彙整",
+    [Key.link]: "友鏈",
     [Key.search]: "搜尋",
 
     [Key.tags]: "標籤",
     [Key.categories]: "分類",
+    [Key.siteStats]: "訪問統計",
     [Key.recentPosts]: "最新文章",
 
     [Key.comments]: "評論",
@@ -21,6 +23,9 @@ export const zh_TW: Translation = {
     [Key.wordsCount]: "字",
     [Key.minuteCount]: "分鐘",
     [Key.minutesCount]: "分鐘",
+    [Key.totalVisits]: "累計訪問量",
+    [Key.todayVisits]: "今日訪問量",
+    [Key.todayVisitors]: "今日訪客數",
     [Key.postCount]: "篇文章",
     [Key.postsCount]: "篇文章",
 
@@ -45,4 +50,5 @@ export const zh_TW: Translation = {
         "找不到 {ENTRY} 內容項目。若您是管理員，請新增 {FILE} 或更新內容設定。",
 
     [Key.imageLoadError]: "無法載入圖片",
+    [Key.statsUnavailable]: "統計服務暫時不可用",
 };

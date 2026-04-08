@@ -5,10 +5,12 @@ export const ja: Translation = {
     [Key.home]: "ホーム",
     [Key.about]: "このサイトについて",
     [Key.archive]: "アーカイブ",
+    [Key.link]: "リンク",
     [Key.search]: "検索",
 
     [Key.tags]: "タグ",
     [Key.categories]: "カテゴリ",
+    [Key.siteStats]: "アクセス統計",
     [Key.recentPosts]: "最近の投稿",
 
     [Key.comments]: "コメント",
@@ -21,6 +23,9 @@ export const ja: Translation = {
     [Key.wordsCount]: "文字",
     [Key.minuteCount]: "分",
     [Key.minutesCount]: "分",
+    [Key.totalVisits]: "累計アクセス数",
+    [Key.todayVisits]: "今日のアクセス数",
+    [Key.todayVisitors]: "今日の訪問者数",
     [Key.postCount]: "件",
     [Key.postsCount]: "件",
 
@@ -46,4 +51,5 @@ export const ja: Translation = {
         "{ENTRY} コンテンツエントリが見つかりませんでした。管理者の方は {FILE} を追加するか、コンテンツ設定を更新してください。",
 
     [Key.imageLoadError]: "画像を読み込めませんでした",
+    [Key.statsUnavailable]: "統計情報を一時的に取得できません",
 };

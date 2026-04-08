@@ -5,10 +5,12 @@ export const id: Translation = {
     [Key.home]: "Beranda",
     [Key.about]: "Tentang",
     [Key.archive]: "Arsip",
+    [Key.link]: "Tautan",
     [Key.search]: "Cari",
 
     [Key.tags]: "Tag",
     [Key.categories]: "Kategori",
+    [Key.siteStats]: "Statistik Situs",
     [Key.recentPosts]: "Postingan Terbaru",
 
     [Key.comments]: "Komentar",
@@ -21,6 +23,9 @@ export const id: Translation = {
     [Key.wordsCount]: "kata",
     [Key.minuteCount]: "menit",
     [Key.minutesCount]: "menit",
+    [Key.totalVisits]: "Total kunjungan",
+    [Key.todayVisits]: "Kunjungan hari ini",
+    [Key.todayVisitors]: "Pengunjung hari ini",
     [Key.postCount]: "postingan",
     [Key.postsCount]: "postingan",
 
@@ -46,4 +51,5 @@ export const id: Translation = {
         "Entri konten {ENTRY} tidak dapat ditemukan. Jika Anda administrator, tambahkan {FILE} atau perbarui konfigurasi konten.",
 
     [Key.imageLoadError]: "Gagal memuat gambar",
+    [Key.statsUnavailable]: "Statistik sementara tidak tersedia",
 };

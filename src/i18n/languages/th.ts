@@ -5,10 +5,12 @@ export const th: Translation = {
     [Key.home]: "หน้าแรก",
     [Key.about]: "เกี่ยวกับเรา",
     [Key.archive]: "คลัง",
+    [Key.link]: "ลิงก์",
     [Key.search]: "ค้นหา",
 
     [Key.tags]: "ป้ายกำกับ",
     [Key.categories]: "หมวดหมู่",
+    [Key.siteStats]: "สถิติการเข้าชม",
     [Key.recentPosts]: "โพสต์ล่าสุด",
 
     [Key.comments]: "ความคิดเห็น",
@@ -21,6 +23,9 @@ export const th: Translation = {
     [Key.wordsCount]: "คำ",
     [Key.minuteCount]: "นาที",
     [Key.minutesCount]: "นาที",
+    [Key.totalVisits]: "ยอดเข้าชมสะสม",
+    [Key.todayVisits]: "ยอดเข้าชมวันนี้",
+    [Key.todayVisitors]: "ผู้เข้าชมวันนี้",
     [Key.postCount]: "โพสต์",
     [Key.postsCount]: "โพสต์",
 
@@ -45,4 +50,5 @@ export const th: Translation = {
         "ไม่พบเนื้อหา {ENTRY} หากคุณเป็นผู้ดูแลระบบ โปรดเพิ่ม {FILE} หรืออัปเดตการตั้งค่าเนื้อหา",
 
     [Key.imageLoadError]: "ไม่สามารถโหลดรูปภาพได้",
+    [Key.statsUnavailable]: "ไม่สามารถดึงสถิติได้ชั่วคราว",
 };

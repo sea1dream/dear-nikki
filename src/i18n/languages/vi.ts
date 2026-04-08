@@ -5,10 +5,12 @@ export const vi: Translation = {
     [Key.home]: "Trang chủ",
     [Key.about]: "Giới thiệu",
     [Key.archive]: "Lưu trữ",
+    [Key.link]: "Liên kết",
     [Key.search]: "Tìm kiếm",
 
     [Key.tags]: "Thẻ",
     [Key.categories]: "Danh mục",
+    [Key.siteStats]: "Thống kê truy cập",
     [Key.recentPosts]: "Bài viết mới nhất",
 
     [Key.comments]: "Bình luận",
@@ -21,6 +23,9 @@ export const vi: Translation = {
     [Key.wordsCount]: "từ",
     [Key.minuteCount]: "phút đọc",
     [Key.minutesCount]: "phút đọc",
+    [Key.totalVisits]: "Lượt truy cập tích lũy",
+    [Key.todayVisits]: "Lượt truy cập hôm nay",
+    [Key.todayVisitors]: "Khách hôm nay",
     [Key.postCount]: "bài viết",
     [Key.postsCount]: "bài viết",
 
@@ -46,4 +51,5 @@ export const vi: Translation = {
         "Không tìm thấy mục nội dung {ENTRY}. Nếu bạn là quản trị viên, hãy thêm {FILE} hoặc cập nhật cấu hình nội dung.",
 
     [Key.imageLoadError]: "Không tải được hình ảnh",
+    [Key.statsUnavailable]: "Tạm thời không tải được thống kê",
 };
