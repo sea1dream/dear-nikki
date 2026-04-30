@@ -47,10 +47,10 @@ export const navBarConfig: NavBarConfig = {
         LinkPreset.Home,
         LinkPreset.Archive,
         LinkPreset.About,
-        LinkPreset.Link,        // 友链
+        LinkPreset.Link, // 友链
         {
             name: "GitHub",
-            url: "https://github.com/Rabbit0w0/dear-nikki", // Internal links should not include the base path, as it is automatically added
+            url: "https://github.com/sea1dream", // Internal links should not include the base path, as it is automatically added
             external: true, // Show an external link icon and will open in a new tab
         },
     ],
@@ -67,10 +67,10 @@ export const profileConfig: ProfileConfig = {
     links: [
         {
             name: "GitHub",
-            icon: "fa6-brands:github",// Visit https://icones.js.org/ for icon codes
+            icon: "fa6-brands:github", // Visit https://icones.js.org/ for icon codes
             // You will need to install the corresponding icon set if it's not already included
             // `pnpm add @iconify-json/<icon-set-name>`
-            url: "https://github.com/Rabbit0w0",
+            url: "https://github.com/sea1dream",
         },
     ],
 };
