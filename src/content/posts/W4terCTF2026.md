@@ -11,7 +11,7 @@ draft: false
 
 一道OGW+扫描栈上环境变量的shellcode题
 
-[附件](https://github.com/sea1dream/pwn_contest_attachments/blob/main/W4terCTF2026/predator.zip)
+[附件1](https://github.com/sea1dream/pwn_contest_attachments/blob/main/W4terCTF2026/predator.zip)
 
 开了沙箱，禁了execve和execveat，可以执行输入的shellcode
 
