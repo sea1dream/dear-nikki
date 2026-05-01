@@ -14,8 +14,11 @@ draft: false
 [附件](https://github.com/sea1dream/pwn_contest_attachments/raw/refs/heads/main/W4terCTF2026/predator.zip)
 
 开了沙箱，禁了execve和execveat，可以执行输入的shellcode
+
 文件名不是flag，需要OGW列出当前目录下的文件来查找再用orw读取
+
 还没完，只给了前半个flag，后半个在环境变量里
+
 于是用mincore从高地址往低地址扫描内存页，找到已映射的页面后，把该页的地址和整页内容写到 stdout。
 
 ![拿到flag截图](https://uploader.shimo.im/f/o2CKeOhE2K5iG24Q.png!thumbnail?accessToken=eyJhbGciOiJIUzI1NiIsImtpZCI6ImRlZmF1bHQiLCJ0eXAiOiJKV1QifQ.eyJleHAiOjE3Nzc2MjEzOTEsImZpbGVHVUlEIjoibTVrdmR6bUxHeVNhRHYzWCIsImlhdCI6MTc3NzYyMTA5MSwiaXNzIjoidXBsb2FkZXJfYWNjZXNzX3Jlc291cmNlIiwicGFhIjoiYWxsOmFsbDoiLCJ1c2VySWQiOjk5NTUxOTY5fQ.xziTbTppGIjCMZ81HXm2J4nWPpPniThKY3WQ3ZHQGkk)
