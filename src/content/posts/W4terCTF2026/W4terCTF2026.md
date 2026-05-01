@@ -21,7 +21,7 @@ draft: false
 
 于是用mincore从高地址往低地址扫描内存页，找到已映射的页面后，把该页的地址和整页内容写到 stdout。
 
-![拿到flag截图](https://uploader.shimo.im/f/o2CKeOhE2K5iG24Q.png!thumbnail?accessToken=eyJhbGciOiJIUzI1NiIsImtpZCI6ImRlZmF1bHQiLCJ0eXAiOiJKV1QifQ.eyJleHAiOjE3Nzc2MjEzOTEsImZpbGVHVUlEIjoibTVrdmR6bUxHeVNhRHYzWCIsImlhdCI6MTc3NzYyMTA5MSwiaXNzIjoidXBsb2FkZXJfYWNjZXNzX3Jlc291cmNlIiwicGFhIjoiYWxsOmFsbDoiLCJ1c2VySWQiOjk5NTUxOTY5fQ.xziTbTppGIjCMZ81HXm2J4nWPpPniThKY3WQ3ZHQGkk)
+![拿到flag截图](./flag.png)
 
 
 ```python
