@@ -10,7 +10,6 @@ export const tr: Translation = {
 
     [Key.tags]: "Etiketler",
     [Key.categories]: "Kategoriler",
-    [Key.siteStats]: "Site İstatistikleri",
     [Key.recentPosts]: "Son Gönderiler",
 
     [Key.comments]: "Yorumlar",
@@ -23,9 +22,6 @@ export const tr: Translation = {
     [Key.wordsCount]: "kelime",
     [Key.minuteCount]: "dakika",
     [Key.minutesCount]: "dakika",
-    [Key.totalVisits]: "Toplam ziyaret",
-    [Key.todayVisits]: "Bugünkü ziyaretler",
-    [Key.todayVisitors]: "Bugünkü ziyaretçiler",
     [Key.postCount]: "gönderi",
     [Key.postsCount]: "gönderiler",
 
@@ -51,5 +47,4 @@ export const tr: Translation = {
         "{ENTRY} içerik kaydı bulunamadı. Yöneticiyseniz lütfen {FILE} ekleyin veya içerik yapılandırmasını güncelleyin.",
 
     [Key.imageLoadError]: "Görüntü yüklenemedi",
-    [Key.statsUnavailable]: "İstatistikler geçici olarak kullanılamıyor",
 };

@@ -19,6 +19,7 @@ import FaviconLinks from "@components/FaviconLinks.astro";
 import LoadingCover from "@components/LoadingCover.astro";
 import SEOMeta from "@components/SEOMeta.astro";
 import ThemeScript from "@components/ThemeScript.astro";
+import Analytics from "@vercel/analytics/astro";
 import { profileConfig, siteConfig } from "@/config";
 import { PAGE_WIDTH } from "../constants/constants";
 import { defaultFavicons } from "../constants/icon";
@@ -26,11 +27,11 @@ import type { Favicon } from "../types/config";
 import { pathsEqual, url } from "../utils/url";
 
 interface Props {
-	title?: string;
-	banner?: string;
-	description?: string;
-	lang?: string;
-	setOGTypeArticle?: boolean;
+    title?: string;
+    banner?: string;
+    description?: string;
+    lang?: string;
+    setOGTypeArticle?: boolean;
 }
 
 let { title, banner, description, lang, setOGTypeArticle } = Astro.props;
@@ -44,7 +45,7 @@ const isHomePage = pathsEqual(Astro.url.pathname, url("/"));
 // why doing this in Layout instead of GlobalStyles: https://github.com/withastro/astro/issues/6728#issuecomment-1502203757
 const configHue = siteConfig.themeColor.hue;
 if (!banner || typeof banner !== "string" || banner.trim() === "") {
-	banner = siteConfig.banner.src;
+    banner = siteConfig.banner.src;
 }
 
 // TODO don't use post cover as banner for now
@@ -54,16 +55,16 @@ const enableBanner = siteConfig.banner.enable;
 
 let pageTitle: string;
 if (title) {
-	pageTitle = `${title} - ${siteConfig.title}`;
+    pageTitle = `${title} - ${siteConfig.title}`;
 } else {
-	pageTitle = `${siteConfig.title} - ${siteConfig.subtitle}`;
+    pageTitle = `${siteConfig.title} - ${siteConfig.subtitle}`;
 }
 
 const favicons: Favicon[] =
-	siteConfig.favicon.length > 0 ? siteConfig.favicon : defaultFavicons;
+    siteConfig.favicon.length > 0 ? siteConfig.favicon : defaultFavicons;
 
 if (!lang) {
-	lang = `${siteConfig.lang}`;
+    lang = `${siteConfig.lang}`;
 }
 const siteLang = lang.replace("_", "-");
 ---
@@ -122,6 +123,7 @@ const siteLang = lang.replace("_", "-");
 
 		<LoadingCover />
 		<slot />
+		<Analytics />
 	</body>
 </html>
 

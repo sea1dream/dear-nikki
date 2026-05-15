@@ -1,3 +1,4 @@
+import { pageview } from "@vercel/analytics";
 import { pathsEqual, url } from "@utils/url";
 import { BANNER_HEIGHT } from "../../constants/constants";
 import { getLenis } from "./lenis";
@@ -75,6 +76,13 @@ export function setupSwupHooks() {
     });
 
     window.swup.hooks.on("page:view", () => {
+        // Swup replaces page content without a full reload, so we send
+        // an extra pageview for client-side navigations after the initial load.
+        pageview({
+            path: window.location.pathname,
+            route: window.location.pathname,
+        });
+
         // hide the temp high element when the transition is done
         const heightExtend = document.getElementById("page-height-extend");
         if (heightExtend) {

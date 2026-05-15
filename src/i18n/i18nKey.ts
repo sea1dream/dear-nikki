@@ -7,7 +7,6 @@ enum I18nKey {
 
     tags = "tags",
     categories = "categories",
-    siteStats = "siteStats",
     recentPosts = "recentPosts",
 
     comments = "comments",
@@ -20,9 +19,6 @@ enum I18nKey {
     wordsCount = "wordsCount",
     minuteCount = "minuteCount",
     minutesCount = "minutesCount",
-    totalVisits = "totalVisits",
-    todayVisits = "todayVisits",
-    todayVisitors = "todayVisitors",
     postCount = "postCount",
     postsCount = "postsCount",
 
@@ -46,7 +42,6 @@ enum I18nKey {
     aboutMissingDescription = "aboutMissingDescription",
 
     imageLoadError = "imageLoadError",
-    statsUnavailable = "statsUnavailable",
 }
 
 export default I18nKey;

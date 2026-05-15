@@ -9,7 +9,7 @@
         "build": "astro build && pagefind --site dist",
         "preview": "astro preview",
         "astro": "astro",
-        "type-check": "tsc --noEmit --isolatedDeclarations",
+        "type-check": "tsc --noEmit",
         "format": "biome format --write ./src",
         "lint": "biome check --write ./src",
         "preinstall": "npx only-allow pnpm"
@@ -34,6 +34,7 @@
         "@iconify/svelte": "^4.2.0",
         "@swup/astro": "^1.7.0",
         "@tailwindcss/typography": "^0.5.19",
+        "@vercel/analytics": "^2.0.1",
         "astro": "5.16.3",
         "astro-expressive-code": "^0.41.5",
         "astro-icon": "^1.1.5",

@@ -10,7 +10,6 @@ export const es: Translation = {
 
     [Key.tags]: "Etiquetas",
     [Key.categories]: "Categorías",
-    [Key.siteStats]: "Estadísticas",
     [Key.recentPosts]: "Publicaciones recientes",
 
     [Key.comments]: "Comentarios",
@@ -23,9 +22,6 @@ export const es: Translation = {
     [Key.wordsCount]: "palabras",
     [Key.minuteCount]: "minuto",
     [Key.minutesCount]: "minutos",
-    [Key.totalVisits]: "Visitas totales",
-    [Key.todayVisits]: "Visitas de hoy",
-    [Key.todayVisitors]: "Visitantes de hoy",
     [Key.postCount]: "publicación",
     [Key.postsCount]: "publicaciones",
 
@@ -51,6 +47,4 @@ export const es: Translation = {
         "La entrada de contenido {ENTRY} no se encontró. Si eres administrador, agrega {FILE} o actualiza la configuración del contenido.",
 
     [Key.imageLoadError]: "Error al cargar la imagen",
-    [Key.statsUnavailable]:
-        "Las estadísticas no están disponibles temporalmente",
 };
