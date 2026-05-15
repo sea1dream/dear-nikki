@@ -1,55 +1,124 @@
 ---
+import { Icon } from "astro-icon/components";
 import I18nKey from "../i18n/i18nKey";
 import { i18n } from "../i18n/translation";
 import MainGridLayout from "../layouts/MainGridLayout.astro";
 
-const friendsData = [
+interface FriendLink {
+    name: string;
+    url: string;
+    avatar: string;
+    label?: string;
+    description?: string;
+    tags?: string[];
+}
+
+const pageTitle = "\u53cb\u60c5\u94fe\u63a5";
+
+const friendsData: FriendLink[] = [
     {
-        name: " きたがわまりん",
+        name: "\u304d\u305f\u304c\u308f\u307e\u308a\u3093",
         url: "https://www.2rk.cc/detail/101vGqIbcE5sbJ1EQ0Ln?id=1",
         avatar: "https://images.steamusercontent.com/ugc/2362769341371317445/BD8E2AD582B9B24D516FD1B5D03E05C81A0509E9/?imw=5000&imh=5000&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=false",
-        description: "❤",
+        label: "\u2764",
     },
-
 ];
-// ============================================
 ---
 
 <MainGridLayout title={i18n(I18nKey.link)} description={i18n(I18nKey.link)}>
-    <div
-            class="flex w-full rounded-[var(--radius-large)] overflow-hidden relative min-h-32"
-    >
-        <div class="card-base z-10 px-9 py-6 relative w-full">
-            <h1 class="text-2xl font-bold mb-4 text-black dark:text-white">友情链接</h1>
+    <section class="flex w-full rounded-[var(--radius-large)] overflow-hidden relative min-h-32">
+        <div class="card-base z-10 px-6 py-6 md:px-9 relative w-full">
+            <div class="mb-6 flex items-end justify-between gap-4">
+                <div>
+                    <p class="text-sm font-semibold tracking-[0.35em] text-50 uppercase">
+                        Links
+                    </p>
+                    <h1 class="mt-2 text-2xl font-bold text-90 md:text-3xl">
+                        {pageTitle}
+                    </h1>
+                </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="hidden items-center gap-2 rounded-full bg-[var(--btn-regular-bg)] px-4 py-2 text-sm font-semibold text-[var(--btn-content)] dark:text-white/85 md:inline-flex">
+                    <Icon
+                        name="material-symbols:auto-awesome-rounded"
+                        class="text-base"
+                    />
+                    {friendsData.length} friend{friendsData.length > 1 ? "s" : ""}
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
                 {
                     friendsData.map((friend) => (
-                            <a
-                                    href={friend.url}
-                                    target="_blank"
-                                    class="group flex items-center p-4 rounded-lg bg-[var(--card-bg)] border border-black/5 dark:border-white/10 hover:bg-[var(--btn-plain-bg-hover)] transition-all duration-300 decoration-none no-underline"
-                            >
-                                <div class="flex-shrink-0 mr-4">
+                        <a
+                            href={friend.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            aria-label={`Visit ${friend.name}`}
+                            class="group relative overflow-hidden rounded-[1.25rem] border border-black/5 bg-[var(--card-bg)] p-5 no-underline shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-[oklch(0.75_0.12_var(--hue))] hover:shadow-[0_14px_32px_rgba(15,23,42,0.12)] dark:border-white/10 dark:hover:border-[oklch(0.82_0.12_var(--hue))] dark:hover:shadow-[0_14px_36px_rgba(2,6,23,0.4)]"
+                        >
+                            <div class="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-[oklch(0.78_0.14_var(--hue))] to-transparent opacity-80" />
+
+                            <div class="flex items-start gap-4">
+                                <div class="relative shrink-0">
                                     <img
-                                            src={friend.avatar}
-                                            alt={friend.name}
-                                            class="w-16 h-16 rounded-full object-cover border-2 border-white/20 group-hover:rotate-12 transition-transform duration-300"
+                                        src={friend.avatar}
+                                        alt={friend.name}
+                                        class="h-16 w-16 rounded-2xl object-cover ring-1 ring-black/5 transition-transform duration-300 group-hover:rotate-[6deg] group-hover:scale-105 dark:ring-white/10"
                                     />
                                 </div>
 
-                                <div class="overflow-hidden">
-                                    <h3 class="font-bold text-lg truncate group-hover:text-[var(--primary)] transition-colors">
-                                        {friend.name}
-                                    </h3>
-                                    <p class="text-sm opacity-60 line-clamp-2 mt-1">
-                                        {friend.description}
-                                    </p>
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex items-start justify-between gap-3">
+                                        <div class="min-w-0">
+                                            <h3 class="truncate text-lg font-bold text-90 group-hover:text-[var(--primary)]">
+                                                {friend.name}
+                                            </h3>
+
+                                            {
+                                                friend.description && (
+                                                    <p class="mt-2 line-clamp-2 text-sm text-50">
+                                                        {friend.description}
+                                                    </p>
+                                                )
+                                            }
+                                        </div>
+
+                                        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--btn-regular-bg)] text-[var(--btn-content)] transition-transform duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 dark:text-white/85">
+                                            <Icon
+                                                name="material-symbols:arrow-outward-rounded"
+                                                class="text-lg"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {
+                                        friend.label && (
+                                            <div class="mt-3 flex flex-wrap gap-2">
+                                                <span class="inline-flex items-center rounded-full border border-[oklch(0.86_0.05_var(--hue))] bg-[oklch(0.97_0.02_var(--hue))] px-3 py-1 text-xs font-semibold tracking-[0.08em] text-[oklch(0.45_0.14_var(--hue))] shadow-[0_8px_18px_rgba(15,23,42,0.08)] dark:border-[oklch(0.88_0.03_var(--hue))] dark:bg-[oklch(0.84_0.05_var(--hue))] dark:text-[oklch(0.28_0.07_var(--hue))] dark:shadow-[0_10px_22px_rgba(15,23,42,0.22)]">
+                                                    {friend.label}
+                                                </span>
+                                            </div>
+                                        )
+                                    }
+
+                                    {
+                                        friend.tags && friend.tags.length > 0 && (
+                                            <div class="mt-3 flex flex-wrap gap-2">
+                                                {friend.tags.map((tag) => (
+                                                    <span class="inline-flex items-center rounded-full bg-[var(--btn-regular-bg)] px-3 py-1 text-xs font-medium text-[var(--btn-content)] dark:text-white/85">
+                                                        {tag}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        )
+                                    }
                                 </div>
-                            </a>
+                            </div>
+                        </a>
                     ))
                 }
             </div>
         </div>
-    </div>
+    </section>
 </MainGridLayout>
