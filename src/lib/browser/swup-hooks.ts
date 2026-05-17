@@ -25,6 +25,8 @@ function debouncedLenisResize() {
  * Setup all Swup page transition hooks
  */
 export function setupSwupHooks() {
+    let hasHandledInitialPageView = false;
+
     window.swup.hooks.on("link:click", () => {
         // Remove the delay for the first time page load
         document.documentElement.style.setProperty("--content-delay", "0ms");
@@ -76,14 +78,18 @@ export function setupSwupHooks() {
     });
 
     window.swup.hooks.on("page:view", () => {
-        // Swup replaces page content without a full reload, so we send
-        // an extra pageview for client-side navigations after the initial load.
-        pageview({
-            path: window.location.pathname,
-            route: window.location.pathname,
-        });
+        if (hasHandledInitialPageView) {
+            // The initial full page load is already tracked separately.
+            // We only emit extra pageviews for client-side navigations.
+            pageview({
+                path: window.location.pathname,
+                route: window.location.pathname,
+            });
 
-        window.dispatchEvent(new CustomEvent("site:page-view"));
+            window.dispatchEvent(new CustomEvent("site:page-view"));
+        } else {
+            hasHandledInitialPageView = true;
+        }
 
         // hide the temp high element when the transition is done
         const heightExtend = document.getElementById("page-height-extend");
