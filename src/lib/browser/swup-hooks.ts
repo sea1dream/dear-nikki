@@ -83,6 +83,8 @@ export function setupSwupHooks() {
             route: window.location.pathname,
         });
 
+        window.dispatchEvent(new CustomEvent("site:page-view"));
+
         // hide the temp high element when the transition is done
         const heightExtend = document.getElementById("page-height-extend");
         if (heightExtend) {

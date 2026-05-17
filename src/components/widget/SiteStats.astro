@@ -1,0 +1,374 @@
+---
+import WidgetLayout from "./WidgetLayout.astro";
+
+interface Props {
+    class?: string;
+    style?: string;
+}
+
+const { class: className = "", style } = Astro.props;
+---
+
+<WidgetLayout
+    name="访问统计"
+    id="site-stats"
+    class={className}
+    style={style}
+>
+    <site-stats-widget
+        data-counter-namespace="dear-nikki-sea1dream-stats"
+        data-timezone="Asia/Shanghai"
+    >
+        <div class="grid gap-2">
+            <div class="rounded-2xl bg-[var(--btn-regular-bg)] px-4 py-3">
+                <div class="text-xs font-medium uppercase tracking-[0.18em] text-50">
+                    Today
+                </div>
+                <div class="mt-2 flex items-end justify-between gap-4">
+                    <span class="text-sm text-75">今日访问次数</span>
+                    <span
+                        data-value="todayVisits"
+                        class="text-xl font-bold tabular-nums text-90"
+                    >
+                        --
+                    </span>
+                </div>
+            </div>
+
+            <div class="rounded-2xl bg-[var(--btn-regular-bg)] px-4 py-3">
+                <div class="text-xs font-medium uppercase tracking-[0.18em] text-50">
+                    Total Views
+                </div>
+                <div class="mt-2 flex items-end justify-between gap-4">
+                    <span class="text-sm text-75">总访问次数</span>
+                    <span
+                        data-value="totalVisits"
+                        class="text-xl font-bold tabular-nums text-90"
+                    >
+                        --
+                    </span>
+                </div>
+            </div>
+
+            <div class="rounded-2xl bg-[var(--btn-regular-bg)] px-4 py-3">
+                <div class="text-xs font-medium uppercase tracking-[0.18em] text-50">
+                    Total Visitors
+                </div>
+                <div class="mt-2 flex items-end justify-between gap-4">
+                    <span class="text-sm text-75">总访客数量</span>
+                    <span
+                        data-value="totalVisitors"
+                        class="text-xl font-bold tabular-nums text-90"
+                    >
+                        --
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <p
+            data-status
+            class="hidden px-1 pt-2 text-xs text-50"
+            aria-live="polite"
+        ></p>
+    </site-stats-widget>
+</WidgetLayout>
+
+<script>
+    // @ts-nocheck
+    class SiteStatsWidget extends HTMLElement {
+        statusNode;
+        refreshInFlight = null;
+        refreshQueued = false;
+        deviceKeyPromise = null;
+
+        connectedCallback() {
+            this.statusNode = this.querySelector("[data-status]");
+            this.handlePageView = this.handlePageView.bind(this);
+
+            window.addEventListener("site:page-view", this.handlePageView);
+            void this.refreshStats();
+        }
+
+        disconnectedCallback() {
+            window.removeEventListener("site:page-view", this.handlePageView);
+        }
+
+        handlePageView() {
+            void this.refreshStats();
+        }
+
+        async refreshStats() {
+            if (this.refreshInFlight) {
+                this.refreshQueued = true;
+                return;
+            }
+
+            this.setStatus("");
+            this.refreshInFlight = this.collectStats();
+
+            try {
+                const stats = await this.refreshInFlight;
+                if (!stats) {
+                    this.setStatus("统计服务暂时不可用");
+                    return;
+                }
+
+                this.setValue("todayVisits", stats.todayVisits);
+                this.setValue("totalVisits", stats.totalVisits);
+                this.setValue("totalVisitors", stats.totalVisitors);
+            } finally {
+                this.refreshInFlight = null;
+
+                if (this.refreshQueued) {
+                    this.refreshQueued = false;
+                    void this.refreshStats();
+                }
+            }
+        }
+
+        async collectStats() {
+            const dateKey = this.getDateKey();
+            const [todayVisits, totalVisits, totalVisitors] = await Promise.all([
+                this.incrementCounter(`pageviews-${dateKey}`),
+                this.incrementCounter("pageviews-total"),
+                this.getOrRegisterVisitor(),
+            ]);
+
+            if (
+                todayVisits === null ||
+                totalVisits === null ||
+                totalVisitors === null
+            ) {
+                return null;
+            }
+
+            return {
+                todayVisits,
+                totalVisits,
+                totalVisitors,
+            };
+        }
+
+        async getOrRegisterVisitor() {
+            const namespace = this.getNamespace();
+            const deviceKey = await this.getDeviceKey();
+            const totalVisitorsKey = "visitors-total";
+            const localFlagKey = `${namespace}:visitor-registered:${deviceKey}`;
+
+            if (this.readStorage(localFlagKey) === "1") {
+                return this.getCounter(totalVisitorsKey);
+            }
+
+            const deviceCounterKey = `visitor-${deviceKey}`;
+            const existingDeviceCount = await this.getCounter(deviceCounterKey);
+
+            if (existingDeviceCount === null) {
+                return null;
+            }
+
+            if (existingDeviceCount > 0) {
+                this.writeStorage(localFlagKey, "1");
+                return this.getCounter(totalVisitorsKey);
+            }
+
+            this.writeStorage(localFlagKey, "1");
+
+            const [registeredDevice, totalVisitors] = await Promise.all([
+                this.incrementCounter(deviceCounterKey),
+                this.incrementCounter(totalVisitorsKey),
+            ]);
+
+            if (registeredDevice === null || totalVisitors === null) {
+                this.writeStorage(localFlagKey, "0");
+                return null;
+            }
+
+            return totalVisitors;
+        }
+
+        async getDeviceKey() {
+            if (this.deviceKeyPromise) {
+                return this.deviceKeyPromise;
+            }
+
+            this.deviceKeyPromise = this.computeDeviceKey();
+            return this.deviceKeyPromise;
+        }
+
+        async computeDeviceKey() {
+            const namespace = this.getNamespace();
+            const storageKey = `${namespace}:device-key`;
+            const storedKey = this.readStorage(storageKey);
+
+            if (storedKey) {
+                return storedKey;
+            }
+
+            const source = [
+                navigator.platform || "",
+                navigator.language || "",
+                (navigator.languages || []).join(","),
+                navigator.hardwareConcurrency || "",
+                navigator.deviceMemory || "",
+                navigator.maxTouchPoints || "",
+                screen.width || "",
+                screen.height || "",
+                screen.colorDepth || "",
+                window.devicePixelRatio || "",
+                Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+            ].join("|");
+
+            const deviceKey = `v1-${await this.hashString(source)}`;
+            this.writeStorage(storageKey, deviceKey);
+            return deviceKey;
+        }
+
+        async hashString(value) {
+            if (window.crypto?.subtle && typeof TextEncoder !== "undefined") {
+                const bytes = new TextEncoder().encode(value);
+                const digest = await window.crypto.subtle.digest(
+                    "SHA-256",
+                    bytes,
+                );
+
+                return Array.from(new Uint8Array(digest))
+                    .map((byte) => byte.toString(16).padStart(2, "0"))
+                    .join("")
+                    .slice(0, 24);
+            }
+
+            let hash = 2166136261;
+            for (let index = 0; index < value.length; index += 1) {
+                hash ^= value.charCodeAt(index);
+                hash = Math.imul(hash, 16777619);
+            }
+
+            return Math.abs(hash >>> 0).toString(16);
+        }
+
+        getNamespace() {
+            const baseNamespace =
+                this.dataset.counterNamespace || "dear-nikki-sea1dream-stats";
+            const hostname = window.location.hostname;
+            const isLocalHost =
+                hostname === "localhost" ||
+                hostname === "127.0.0.1" ||
+                hostname === "::1";
+
+            return isLocalHost ? `${baseNamespace}-local` : baseNamespace;
+        }
+
+        getDateKey() {
+            return new Intl.DateTimeFormat("en-CA", {
+                timeZone: this.dataset.timezone || "Asia/Shanghai",
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+            }).format(new Date());
+        }
+
+        async getCounter(name) {
+            const namespace = encodeURIComponent(this.getNamespace());
+            const counterName = encodeURIComponent(name);
+            const endpoint = `https://api.counterapi.dev/v1/${namespace}/${counterName}/`;
+
+            try {
+                const response = await fetch(endpoint, {
+                    cache: "no-store",
+                });
+
+                if (response.status === 400) {
+                    return 0;
+                }
+
+                if (!response.ok) {
+                    return null;
+                }
+
+                const data = await response.json();
+                return typeof data.count === "number" ? data.count : null;
+            } catch (error) {
+                console.error("Failed to load site stats", error);
+                return null;
+            }
+        }
+
+        async incrementCounter(name) {
+            const namespace = encodeURIComponent(this.getNamespace());
+            const counterName = encodeURIComponent(name);
+            const endpoint = `https://api.counterapi.dev/v1/${namespace}/${counterName}/up`;
+
+            try {
+                const response = await fetch(endpoint, {
+                    cache: "no-store",
+                });
+
+                if (!response.ok) {
+                    return null;
+                }
+
+                const data = await response.json();
+                return typeof data.count === "number" ? data.count : null;
+            } catch (error) {
+                console.error("Failed to update site stats", error);
+                return null;
+            }
+        }
+
+        formatNumber(value) {
+            return new Intl.NumberFormat(
+                document.documentElement.lang || "zh-CN",
+            ).format(value);
+        }
+
+        setValue(key, value) {
+            const node = this.querySelector(`[data-value="${key}"]`);
+            if (!node) {
+                return;
+            }
+
+            node.textContent = this.formatNumber(value);
+        }
+
+        setStatus(message) {
+            if (!this.statusNode) {
+                return;
+            }
+
+            if (!message) {
+                this.statusNode.textContent = "";
+                this.statusNode.classList.add("hidden");
+                return;
+            }
+
+            this.statusNode.textContent = message;
+            this.statusNode.classList.remove("hidden");
+        }
+
+        readStorage(key) {
+            try {
+                return window.localStorage.getItem(key);
+            } catch {
+                return null;
+            }
+        }
+
+        writeStorage(key, value) {
+            try {
+                if (value === "0") {
+                    window.localStorage.removeItem(key);
+                    return;
+                }
+
+                window.localStorage.setItem(key, value);
+            } catch {
+                // Ignore storage errors and continue with runtime counting.
+            }
+        }
+    }
+
+    if (!customElements.get("site-stats-widget")) {
+        customElements.define("site-stats-widget", SiteStatsWidget);
+    }
+</script>
