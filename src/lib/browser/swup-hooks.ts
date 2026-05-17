@@ -3,6 +3,7 @@ import { pathsEqual, url } from "@utils/url";
 import { BANNER_HEIGHT } from "../../constants/constants";
 import { getLenis } from "./lenis";
 import { initCustomScrollbar } from "./scrollbar";
+import { trackSiteStatsPageView } from "./site-stats";
 
 const bannerEnabled = !!document.getElementById("banner-wrapper");
 
@@ -78,18 +79,17 @@ export function setupSwupHooks() {
     });
 
     window.swup.hooks.on("page:view", () => {
-        if (hasHandledInitialPageView) {
-            // The initial full page load is already tracked separately.
-            // We only emit extra pageviews for client-side navigations.
-            pageview({
-                path: window.location.pathname,
-                route: window.location.pathname,
-            });
-
-            window.dispatchEvent(new CustomEvent("site:page-view"));
-        } else {
+        if (!hasHandledInitialPageView) {
             hasHandledInitialPageView = true;
+            return;
         }
+
+        pageview({
+            path: window.location.pathname,
+            route: window.location.pathname,
+        });
+
+        void trackSiteStatsPageView();
 
         // hide the temp high element when the transition is done
         const heightExtend = document.getElementById("page-height-extend");
