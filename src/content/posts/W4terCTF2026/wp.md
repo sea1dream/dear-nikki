@@ -4,7 +4,7 @@ published: 2026-05-01
 description: 题目的质量很高，令人收获很大
 tags: [OGW, shellcode, 扫描环境变量]
 category: Pwn
-draft: false
+draft: true
 ---
 
 ## 能力开发・鸟瞰把握
