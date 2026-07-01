@@ -125,7 +125,6 @@
         };
 
         const onReady = () => {
-            console.log("Pagefind ready event received.");
             initializeSearch();
         };
         const onError = () => {
@@ -134,7 +133,6 @@
         };
 
         if (import.meta.env.DEV) {
-            console.log("Dev mode: using mock search results.");
             initializeSearch();
         } else {
             document.addEventListener("pagefindready", onReady);
@@ -143,7 +141,6 @@
             // Fallback if event missed or already fired
             const fallback = setTimeout(() => {
                 if (!initialized) {
-                    console.log("Fallback: Initializing search after timeout.");
                     initializeSearch();
                 }
             }, 2000);

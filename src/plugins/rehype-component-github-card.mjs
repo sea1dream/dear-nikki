@@ -113,8 +113,6 @@ export function GithubCardComponent(properties, children) {
 
     const card = document.getElementById('${cardUuid}-card');
     card?.classList.remove("fetch-waiting");
-
-    console.log("[GITHUB-CARD] Loaded card for ${repo} | ${cardUuid}.");
   } catch (err) {
     const c = document.getElementById('${cardUuid}-card');
     c?.classList.add("fetch-error");
