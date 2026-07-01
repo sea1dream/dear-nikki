@@ -7,7 +7,7 @@ import MainGridLayout from "../layouts/MainGridLayout.astro";
 interface FriendLink {
     name: string;
     url: string;
-    avatar: string;
+    avatar?: string;
     label?: string;
     description?: string;
     tags?: string[];
@@ -21,6 +21,21 @@ const friendsData: FriendLink[] = [
         url: "https://www.2rk.cc/detail/101vGqIbcE5sbJ1EQ0Ln?id=1",
         avatar: "https://images.steamusercontent.com/ugc/2362769341371317445/BD8E2AD582B9B24D516FD1B5D03E05C81A0509E9/?imw=5000&imh=5000&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=false",
         label: "\u2764",
+    },
+    {
+        name: "\u6885\u897f",
+        url: "https://www.instagram.com/leomessi/",
+        label: "Instagram",
+    },
+    {
+        name: "\u67f3\u667a\u654f",
+        url: "https://www.instagram.com/katarinabluu/",
+        label: "Instagram",
+    },
+    {
+        name: "\u4f0a\u4e1c\u7eaf\u4e5f",
+        url: "https://www.instagram.com/1409junya/",
+        label: "Instagram",
     },
 ];
 ---
@@ -60,12 +75,21 @@ const friendsData: FriendLink[] = [
                             <div class="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-[oklch(0.78_0.14_var(--hue))] to-transparent opacity-80" />
 
                             <div class="flex items-start gap-4">
-                                <div class="relative shrink-0">
-                                    <img
-                                        src={friend.avatar}
-                                        alt={friend.name}
-                                        class="h-16 w-16 rounded-2xl object-cover ring-1 ring-black/5 transition-transform duration-300 group-hover:rotate-[6deg] group-hover:scale-105 dark:ring-white/10"
-                                    />
+                                <div class="relative flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-[var(--btn-regular-bg)] text-[var(--btn-content)] ring-1 ring-black/5 transition-transform duration-300 group-hover:rotate-[6deg] group-hover:scale-105 dark:text-white/85 dark:ring-white/10">
+                                    {
+                                        friend.avatar ? (
+                                            <img
+                                                src={friend.avatar}
+                                                alt={friend.name}
+                                                class="h-full w-full rounded-2xl object-cover"
+                                            />
+                                        ) : (
+                                            <Icon
+                                                name="fa6-brands:instagram"
+                                                class="text-3xl"
+                                            />
+                                        )
+                                    }
                                 </div>
 
                                 <div class="min-w-0 flex-1">
