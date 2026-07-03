@@ -66,14 +66,26 @@ const { class: className = "", style } = Astro.props;
                 <div class="text-xs font-medium uppercase tracking-[0.18em] text-50">
                     Your Region
                 </div>
-                <div class="mt-2 flex items-end justify-between gap-4">
-                    <span class="text-sm text-75">当前地区</span>
+                <div class="mt-2 flex items-center justify-between gap-4">
+                    <span class="shrink-0 text-sm text-75">当前地区</span>
                     <span
                         data-value="visitorRegion"
-                        class="min-w-0 flex-1 whitespace-normal break-words text-right text-sm font-bold leading-snug text-90"
+                        class="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 text-right text-sm font-bold leading-snug text-90"
                         title="地区加载中"
                     >
-                        --
+                        <span
+                            data-region-text
+                            class="min-w-0 max-w-full whitespace-normal break-words"
+                        >
+                            --
+                        </span>
+                        <img
+                            data-region-flag
+                            class="hidden h-3.5 w-5 shrink-0 rounded-[2px] object-cover"
+                            alt=""
+                            decoding="async"
+                            loading="lazy"
+                        />
                     </span>
                 </div>
             </div>
@@ -141,11 +153,11 @@ const { class: className = "", style } = Astro.props;
         }
 
         async loadVisitorRegion() {
-            const cacheKey = "dear-nikki-visitor-region-v2";
-            const cachedRegion = this.getCachedValue(cacheKey);
+            const cacheKey = "dear-nikki-visitor-region-v3";
+            const cachedRegion = this.getCachedJson(cacheKey);
 
             if (cachedRegion) {
-                this.setText("visitorRegion", cachedRegion);
+                this.setVisitorRegion(cachedRegion);
                 return;
             }
 
@@ -163,10 +175,10 @@ const { class: className = "", style } = Astro.props;
                 const data = await response.json();
                 const region = this.formatVisitorRegion(data);
 
-                this.setCachedValue(cacheKey, region);
-                this.setText("visitorRegion", region);
+                this.setCachedJson(cacheKey, region);
+                this.setVisitorRegion(region);
             } catch {
-                this.setText("visitorRegion", "未知地区");
+                this.setVisitorRegion({ text: "未知地区" });
             }
         }
 
@@ -177,8 +189,11 @@ const { class: className = "", style } = Astro.props;
 
             const city = String(data.city || "").trim();
             const region = String(data.region || "").trim();
-            const country = String(data.country || "").trim();
-            const flag = this.formatCountryFlag(data.country_code);
+            const countryCode = this.formatCountryCode(
+                data.country_code || data.country,
+            );
+            const country = this.formatCountryName(data.country, countryCode);
+            const flagUrl = this.formatFlagUrl(data.flag?.img, countryCode);
             const parts = [];
 
             if (city) {
@@ -194,23 +209,36 @@ const { class: className = "", style } = Astro.props;
             }
 
             const regionText = parts.length > 0 ? parts.join(" · ") : "未知地区";
-            return flag ? `${regionText} ${flag}` : regionText;
+            return {
+                text: regionText,
+                flagAlt: country ? `${country}国旗` : "国家旗帜",
+                flagUrl,
+            };
         }
 
-        formatCountryFlag(countryCode) {
+        formatCountryCode(countryCode) {
             const normalizedCode = String(countryCode || "")
                 .trim()
                 .toUpperCase();
 
-            if (!/^[A-Z]{2}$/.test(normalizedCode)) {
-                return "";
+            return /^[A-Z]{2}$/.test(normalizedCode) ? normalizedCode : "";
+        }
+
+        formatCountryName(country, countryCode) {
+            const countryName = String(country || "").trim();
+            return countryName.toUpperCase() === countryCode ? "" : countryName;
+        }
+
+        formatFlagUrl(flagUrl, countryCode) {
+            const explicitFlagUrl = String(flagUrl || "").trim();
+
+            if (explicitFlagUrl) {
+                return explicitFlagUrl;
             }
 
-            return [...normalizedCode]
-                .map((letter) =>
-                    String.fromCodePoint(letter.charCodeAt(0) + 127397),
-                )
-                .join("");
+            return countryCode
+                ? `https://cdn.ipwhois.io/flags/${countryCode.toLowerCase()}.svg`
+                : "";
         }
 
         getCachedValue(key) {
@@ -229,17 +257,66 @@ const { class: className = "", style } = Astro.props;
             }
         }
 
+        getCachedJson(key) {
+            const cachedValue = this.getCachedValue(key);
+            if (!cachedValue) {
+                return null;
+            }
+
+            try {
+                const cachedRegion = JSON.parse(cachedValue);
+                return cachedRegion?.text ? cachedRegion : null;
+            } catch {
+                return { text: cachedValue };
+            }
+        }
+
+        setCachedJson(key, value) {
+            this.setCachedValue(key, JSON.stringify(value));
+        }
+
+        setVisitorRegion(region) {
+            const regionText = String(region?.text || "未知地区");
+            const container = this.querySelector('[data-value="visitorRegion"]');
+            const textNode = this.querySelector("[data-region-text]");
+            const flagNode = this.querySelector("[data-region-flag]");
+
+            if (container) {
+                container.title = regionText;
+            }
+
+            if (textNode) {
+                textNode.textContent = regionText;
+            }
+
+            if (!flagNode) {
+                return;
+            }
+
+            if (region?.flagUrl) {
+                flagNode.src = region.flagUrl;
+                flagNode.alt = region.flagAlt || "";
+                flagNode.classList.remove("hidden");
+                return;
+            }
+
+            flagNode.removeAttribute("src");
+            flagNode.alt = "";
+            flagNode.classList.add("hidden");
+        }
+
         setText(key, value) {
+            if (key === "visitorRegion") {
+                this.setVisitorRegion({ text: value });
+                return;
+            }
+
             const node = this.querySelector(`[data-value="${key}"]`);
             if (!node) {
                 return;
             }
 
             node.textContent = value;
-
-            if (key === "visitorRegion") {
-                node.title = value;
-            }
         }
 
         setStatus(message) {
