@@ -79,13 +79,11 @@ const { class: className = "", style } = Astro.props;
                         >
                             --
                         </span>
-                        <img
+                        <span
                             data-region-flag
-                            class="hidden h-3.5 w-5 shrink-0 rounded-[2px] object-cover"
-                            alt=""
-                            decoding="async"
-                            loading="lazy"
-                        />
+                            class="hidden shrink-0 text-base leading-none"
+                            aria-hidden="true"
+                        ></span>
                     </span>
                 </div>
             </div>
@@ -153,16 +151,19 @@ const { class: className = "", style } = Astro.props;
         }
 
         async loadVisitorRegion() {
-            const cacheKey = "dear-nikki-visitor-region-v3";
+            const cacheKey = "dear-nikki-visitor-region-v4";
             const cachedRegion = this.getCachedJson(cacheKey);
 
             if (cachedRegion) {
                 this.setVisitorRegion(cachedRegion);
-                return;
             }
 
             try {
-                const response = await fetch("https://ipwho.is/?lang=zh-CN", {
+                const lookupUrl = new URL("https://ipwho.is/");
+                lookupUrl.searchParams.set("lang", "zh-CN");
+                lookupUrl.searchParams.set("_", String(Date.now()));
+
+                const response = await fetch(lookupUrl, {
                     cache: "no-store",
                     credentials: "omit",
                     referrerPolicy: "no-referrer",
@@ -178,41 +179,33 @@ const { class: className = "", style } = Astro.props;
                 this.setCachedJson(cacheKey, region);
                 this.setVisitorRegion(region);
             } catch {
-                this.setVisitorRegion({ text: "未知地区" });
+                if (!cachedRegion) {
+                    this.setVisitorRegion({ text: "未知地区" });
+                }
             }
         }
 
         formatVisitorRegion(data) {
             if (!data?.success) {
-                return "未知地区";
+                return { text: "未知地区" };
             }
 
-            const city = String(data.city || "").trim();
-            const region = String(data.region || "").trim();
             const countryCode = this.formatCountryCode(
                 data.country_code || data.country,
             );
-            const country = this.formatCountryName(data.country, countryCode);
-            const flagUrl = this.formatFlagUrl(data.flag?.img, countryCode);
-            const parts = [];
-
-            if (city) {
-                parts.push(city);
-            }
-
-            if (region && region !== city) {
-                parts.push(region);
-            }
-
-            if (country && (!region || !region.includes(country))) {
-                parts.push(country);
-            }
+            const city = this.formatPlaceName(data.city, countryCode);
+            const regionParts = this.splitPlaceParts(data.region, countryCode);
+            const country = this.formatPlaceName(
+                this.formatCountryName(data.country, countryCode),
+                countryCode,
+            );
+            const parts = this.uniquePlaceParts([city, ...regionParts, country]);
 
             const regionText = parts.length > 0 ? parts.join(" · ") : "未知地区";
             return {
                 text: regionText,
                 flagAlt: country ? `${country}国旗` : "国家旗帜",
-                flagUrl,
+                flagEmoji: this.countryCodeToFlagEmoji(countryCode),
             };
         }
 
@@ -229,16 +222,114 @@ const { class: className = "", style } = Astro.props;
             return countryName.toUpperCase() === countryCode ? "" : countryName;
         }
 
-        formatFlagUrl(flagUrl, countryCode) {
-            const explicitFlagUrl = String(flagUrl || "").trim();
+        formatPlaceName(value, countryCode) {
+            const place = String(value || "")
+                .trim()
+                .replace(/\s+/g, " ")
+                .replace(/[。,.，、·]+$/g, "");
 
-            if (explicitFlagUrl) {
-                return explicitFlagUrl;
+            if (!place) {
+                return "";
             }
 
-            return countryCode
-                ? `https://cdn.ipwhois.io/flags/${countryCode.toLowerCase()}.svg`
-                : "";
+            const aliasKey = place
+                .toLowerCase()
+                .replace(/[.\s-]+/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+            const aliases = {
+                HK: new Set([
+                    "hong kong",
+                    "hong kong sar",
+                    "hong kong s a r",
+                    "香港特别行政区",
+                    "香港特別行政區",
+                    "中国香港",
+                    "中國香港",
+                ]),
+                MO: new Set([
+                    "macau",
+                    "macao",
+                    "macau sar",
+                    "macao sar",
+                    "澳门特别行政区",
+                    "澳門特別行政區",
+                    "中国澳门",
+                    "中國澳門",
+                ]),
+            };
+
+            if (countryCode === "HK" && aliases.HK.has(aliasKey)) {
+                return "香港";
+            }
+
+            if (countryCode === "MO" && aliases.MO.has(aliasKey)) {
+                return "澳门";
+            }
+
+            return place;
+        }
+
+        splitPlaceParts(value, countryCode) {
+            return String(value || "")
+                .split(/[·,，、/]+/)
+                .map((part) => this.formatPlaceName(part, countryCode))
+                .filter(Boolean);
+        }
+
+        uniquePlaceParts(parts) {
+            return parts.filter((part, index, uniqueParts) => {
+                if (!part) {
+                    return false;
+                }
+
+                const previousParts = uniqueParts.slice(0, index);
+                return !previousParts.some((previousPart) =>
+                    this.isSamePlace(previousPart, part),
+                );
+            });
+        }
+
+        isSamePlace(first, second) {
+            const firstKey = this.normalizePlaceKey(first);
+            const secondKey = this.normalizePlaceKey(second);
+
+            if (!firstKey || !secondKey) {
+                return false;
+            }
+
+            if (firstKey === secondKey) {
+                return true;
+            }
+
+            const hasCjk = /[\u4e00-\u9fa5]/.test(`${firstKey}${secondKey}`);
+            const minimumLength = hasCjk ? 2 : 4;
+            const shorterLength = Math.min(firstKey.length, secondKey.length);
+
+            return (
+                shorterLength >= minimumLength &&
+                (firstKey.includes(secondKey) || secondKey.includes(firstKey))
+            );
+        }
+
+        normalizePlaceKey(value) {
+            return String(value || "")
+                .trim()
+                .toLowerCase()
+                .replace(/特别行政区|特別行政區/g, "")
+                .replace(/[^\p{L}\p{N}\u4e00-\u9fa5]/gu, "");
+        }
+
+        countryCodeToFlagEmoji(countryCode) {
+            if (!/^[A-Z]{2}$/.test(countryCode)) {
+                return "";
+            }
+
+            return [...countryCode]
+                .map((letter) =>
+                    String.fromCodePoint(letter.charCodeAt(0) + 127397),
+                )
+                .join("");
         }
 
         getCachedValue(key) {
@@ -293,15 +384,15 @@ const { class: className = "", style } = Astro.props;
                 return;
             }
 
-            if (region?.flagUrl) {
-                flagNode.src = region.flagUrl;
-                flagNode.alt = region.flagAlt || "";
+            if (region?.flagEmoji) {
+                flagNode.textContent = region.flagEmoji;
+                flagNode.title = region.flagAlt || "";
                 flagNode.classList.remove("hidden");
                 return;
             }
 
-            flagNode.removeAttribute("src");
-            flagNode.alt = "";
+            flagNode.textContent = "";
+            flagNode.removeAttribute("title");
             flagNode.classList.add("hidden");
         }
 
