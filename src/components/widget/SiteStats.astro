@@ -70,7 +70,8 @@ const { class: className = "", style } = Astro.props;
                     <span class="text-sm text-75">当前地区</span>
                     <span
                         data-value="visitorRegion"
-                        class="max-w-[9rem] truncate text-right text-sm font-bold text-90"
+                        class="min-w-0 flex-1 whitespace-normal break-words text-right text-sm font-bold leading-snug text-90"
+                        title="地区加载中"
                     >
                         --
                     </span>
@@ -140,7 +141,7 @@ const { class: className = "", style } = Astro.props;
         }
 
         async loadVisitorRegion() {
-            const cacheKey = "dear-nikki-visitor-region";
+            const cacheKey = "dear-nikki-visitor-region-v2";
             const cachedRegion = this.getCachedValue(cacheKey);
 
             if (cachedRegion) {
@@ -177,6 +178,7 @@ const { class: className = "", style } = Astro.props;
             const city = String(data.city || "").trim();
             const region = String(data.region || "").trim();
             const country = String(data.country || "").trim();
+            const flag = this.formatCountryFlag(data.country_code);
             const parts = [];
 
             if (city) {
@@ -191,7 +193,24 @@ const { class: className = "", style } = Astro.props;
                 parts.push(country);
             }
 
-            return parts.length > 0 ? parts.join(" · ") : "未知地区";
+            const regionText = parts.length > 0 ? parts.join(" · ") : "未知地区";
+            return flag ? `${regionText} ${flag}` : regionText;
+        }
+
+        formatCountryFlag(countryCode) {
+            const normalizedCode = String(countryCode || "")
+                .trim()
+                .toUpperCase();
+
+            if (!/^[A-Z]{2}$/.test(normalizedCode)) {
+                return "";
+            }
+
+            return [...normalizedCode]
+                .map((letter) =>
+                    String.fromCodePoint(letter.charCodeAt(0) + 127397),
+                )
+                .join("");
         }
 
         getCachedValue(key) {
@@ -217,6 +236,10 @@ const { class: className = "", style } = Astro.props;
             }
 
             node.textContent = value;
+
+            if (key === "visitorRegion") {
+                node.title = value;
+            }
         }
 
         setStatus(message) {
