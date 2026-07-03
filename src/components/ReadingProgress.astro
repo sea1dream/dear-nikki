@@ -1,0 +1,72 @@
+<reading-progress
+    data-target="#post-container"
+    class="pointer-events-none fixed inset-x-0 top-0 z-[80] h-1"
+    aria-hidden="true"
+>
+    <div
+        data-reading-progress-bar
+        class="h-full origin-left scale-x-0 bg-[var(--primary)] shadow-[0_0_18px_oklch(0.75_0.18_var(--hue)/0.45)]"
+    >
+    </div>
+</reading-progress>
+
+<script>
+    class ReadingProgress extends HTMLElement {
+        private frameId: number | null = null;
+        private readonly handleUpdate = () => this.queueUpdate();
+
+        connectedCallback() {
+            window.addEventListener("scroll", this.handleUpdate, {
+                passive: true,
+            });
+            window.addEventListener("resize", this.handleUpdate);
+            this.queueUpdate();
+        }
+
+        disconnectedCallback() {
+            window.removeEventListener("scroll", this.handleUpdate);
+            window.removeEventListener("resize", this.handleUpdate);
+
+            if (this.frameId !== null) {
+                cancelAnimationFrame(this.frameId);
+                this.frameId = null;
+            }
+        }
+
+        queueUpdate() {
+            if (this.frameId !== null) {
+                return;
+            }
+
+            this.frameId = requestAnimationFrame(() => {
+                this.frameId = null;
+                this.updateProgress();
+            });
+        }
+
+        updateProgress() {
+            const targetSelector = this.dataset.target || "#post-container";
+            const target = document.querySelector(targetSelector);
+            const bar = this.querySelector("[data-reading-progress-bar]");
+
+            if (!target || !(bar instanceof HTMLElement)) {
+                return;
+            }
+
+            const targetRect = target.getBoundingClientRect();
+            const targetTop = targetRect.top + window.scrollY;
+            const readableHeight = Math.max(
+                target.scrollHeight - window.innerHeight * 0.55,
+                1,
+            );
+            const current = window.scrollY - targetTop + window.innerHeight * 0.12;
+            const progress = Math.min(Math.max(current / readableHeight, 0), 1);
+
+            bar.style.transform = `scaleX(${progress})`;
+        }
+    }
+
+    if (!customElements.get("reading-progress")) {
+        customElements.define("reading-progress", ReadingProgress);
+    }
+</script>

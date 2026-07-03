@@ -86,6 +86,19 @@ export type LicenseConfig = {
     url: string;
 };
 
+export type CommentsConfig = {
+    enable: boolean;
+    repo: string;
+    repoId: string;
+    category: string;
+    categoryId: string;
+    mapping: "pathname" | "url" | "title" | "og:title" | "specific" | "number";
+    strict: boolean;
+    reactionsEnabled: boolean;
+    inputPosition: "top" | "bottom";
+    lang: string;
+};
+
 export type LIGHT_DARK_MODE =
     | typeof LIGHT_MODE
     | typeof DARK_MODE

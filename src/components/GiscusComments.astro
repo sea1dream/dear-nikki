@@ -1,0 +1,165 @@
+---
+import { Icon } from "astro-icon/components";
+import { commentsConfig } from "../config";
+
+const {
+    enable,
+    repo,
+    repoId,
+    category,
+    categoryId,
+    mapping,
+    strict,
+    reactionsEnabled,
+    inputPosition,
+    lang,
+} = commentsConfig;
+---
+
+{
+    enable && (
+        <section
+            class="card-base mb-4 px-6 py-6 md:px-9 onload-animation"
+            aria-labelledby="comments-heading"
+        >
+            <div class="mb-5 flex items-center gap-3">
+                <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--btn-regular-bg)] text-[var(--btn-content)] dark:text-white/85">
+                    <Icon
+                        name="material-symbols:chat-bubble-outline-rounded"
+                        class="text-xl"
+                    />
+                </div>
+                <h2 id="comments-heading" class="text-xl font-bold text-90">
+                    评论
+                </h2>
+            </div>
+
+            <giscus-comments
+                data-repo={repo}
+                data-repo-id={repoId}
+                data-category={category}
+                data-category-id={categoryId}
+                data-mapping={mapping}
+                data-strict={strict ? "1" : "0"}
+                data-reactions-enabled={reactionsEnabled ? "1" : "0"}
+                data-input-position={inputPosition}
+                data-lang={lang}
+            >
+                <div
+                    data-giscus-container
+                    class="min-h-[12rem] rounded-xl bg-[var(--btn-regular-bg)] p-4"
+                >
+                    <div class="text-sm text-50">评论加载中…</div>
+                </div>
+                <noscript>
+                    <p class="text-sm text-50">
+                        开启 JavaScript 后可查看评论。
+                    </p>
+                </noscript>
+            </giscus-comments>
+        </section>
+    )
+}
+
+<script>
+    // @ts-nocheck
+    class GiscusComments extends HTMLElement {
+        observer = null;
+        themeFrame = null;
+
+        connectedCallback() {
+            this.loadGiscus();
+            this.observeTheme();
+        }
+
+        disconnectedCallback() {
+            this.observer?.disconnect();
+
+            if (this.themeFrame !== null) {
+                cancelAnimationFrame(this.themeFrame);
+                this.themeFrame = null;
+            }
+        }
+
+        loadGiscus() {
+            const container = this.querySelector("[data-giscus-container]");
+            if (!container || container.dataset.loaded === "true") {
+                return;
+            }
+
+            container.replaceChildren();
+            container.dataset.loaded = "true";
+
+            const script = document.createElement("script");
+            script.src = "https://giscus.app/client.js";
+            script.async = true;
+            script.crossOrigin = "anonymous";
+            script.setAttribute("data-repo", this.dataset.repo || "");
+            script.setAttribute("data-repo-id", this.dataset.repoId || "");
+            script.setAttribute("data-category", this.dataset.category || "");
+            script.setAttribute(
+                "data-category-id",
+                this.dataset.categoryId || "",
+            );
+            script.setAttribute("data-mapping", this.dataset.mapping || "pathname");
+            script.setAttribute("data-strict", this.dataset.strict || "1");
+            script.setAttribute(
+                "data-reactions-enabled",
+                this.dataset.reactionsEnabled || "1",
+            );
+            script.setAttribute("data-emit-metadata", "0");
+            script.setAttribute(
+                "data-input-position",
+                this.dataset.inputPosition || "bottom",
+            );
+            script.setAttribute("data-theme", this.getGiscusTheme());
+            script.setAttribute("data-lang", this.dataset.lang || "zh-CN");
+            script.setAttribute("data-loading", "lazy");
+
+            container.append(script);
+        }
+
+        observeTheme() {
+            this.observer?.disconnect();
+            this.observer = new MutationObserver(() => {
+                if (this.themeFrame !== null) {
+                    cancelAnimationFrame(this.themeFrame);
+                }
+
+                this.themeFrame = requestAnimationFrame(() => {
+                    this.themeFrame = null;
+                    this.syncTheme();
+                });
+            });
+
+            this.observer.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ["class"],
+            });
+        }
+
+        getGiscusTheme() {
+            return document.documentElement.classList.contains("dark")
+                ? "dark_dimmed"
+                : "light";
+        }
+
+        syncTheme() {
+            const iframe = this.querySelector("iframe.giscus-frame");
+            iframe?.contentWindow?.postMessage(
+                {
+                    giscus: {
+                        setConfig: {
+                            theme: this.getGiscusTheme(),
+                        },
+                    },
+                },
+                "https://giscus.app",
+            );
+        }
+    }
+
+    if (!customElements.get("giscus-comments")) {
+        customElements.define("giscus-comments", GiscusComments);
+    }
+</script>

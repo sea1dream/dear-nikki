@@ -1,7 +1,9 @@
 ---
 import path from "node:path";
+import GiscusComments from "@components/GiscusComments.astro";
 import License from "@components/misc/License.astro";
 import Markdown from "@components/misc/Markdown.astro";
+import ReadingProgress from "@components/ReadingProgress.astro";
 import I18nKey from "@i18n/i18nKey";
 import { i18n } from "@i18n/translation";
 import MainGridLayout from "@layouts/MainGridLayout.astro";
@@ -58,6 +60,7 @@ const jsonLd = {
         type="application/ld+json"
         set:html={JSON.stringify(jsonLd)}
     />
+    <ReadingProgress />
     <div
         class="flex w-full rounded-[var(--radius-large)] overflow-hidden relative mb-4"
     >
@@ -218,4 +221,6 @@ const jsonLd = {
             }
         </a>
     </div>
+
+    <GiscusComments />
 </MainGridLayout>
