@@ -81,9 +81,21 @@ const { class: className = "", style } = Astro.props;
                         </span>
                         <span
                             data-region-flag
-                            class="hidden shrink-0 text-base leading-none"
+                            class="relative hidden inline-flex h-3.5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-[2px] bg-[var(--btn-regular-bg)] text-[0.65rem] font-bold uppercase leading-none text-75 ring-1 ring-black/10 dark:ring-white/15"
                             aria-hidden="true"
-                        ></span>
+                        >
+                            <img
+                                data-region-flag-image
+                                class="absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-150"
+                                alt=""
+                                decoding="async"
+                                loading="eager"
+                            />
+                            <span
+                                data-region-flag-fallback
+                                class="relative z-[1]"
+                            ></span>
+                        </span>
                     </span>
                 </div>
             </div>
@@ -151,7 +163,7 @@ const { class: className = "", style } = Astro.props;
         }
 
         async loadVisitorRegion() {
-            const cacheKey = "dear-nikki-visitor-region-v4";
+            const cacheKey = "dear-nikki-visitor-region-v5";
             const cachedRegion = this.getCachedJson(cacheKey);
 
             if (cachedRegion) {
@@ -199,13 +211,17 @@ const { class: className = "", style } = Astro.props;
                 this.formatCountryName(data.country, countryCode),
                 countryCode,
             );
+            const explicitFlagUrl = this.formatExplicitFlagUrl(data.flag?.img);
+            const generatedFlagUrl = this.formatGeneratedFlagUrl(countryCode);
             const parts = this.uniquePlaceParts([city, ...regionParts, country]);
 
             const regionText = parts.length > 0 ? parts.join(" · ") : "未知地区";
             return {
                 text: regionText,
                 flagAlt: country ? `${country}国旗` : "国家旗帜",
-                flagEmoji: this.countryCodeToFlagEmoji(countryCode),
+                flagFallback: countryCode,
+                flagUrl: explicitFlagUrl || generatedFlagUrl,
+                fallbackFlagUrl: explicitFlagUrl ? generatedFlagUrl : "",
             };
         }
 
@@ -320,16 +336,14 @@ const { class: className = "", style } = Astro.props;
                 .replace(/[^\p{L}\p{N}\u4e00-\u9fa5]/gu, "");
         }
 
-        countryCodeToFlagEmoji(countryCode) {
-            if (!/^[A-Z]{2}$/.test(countryCode)) {
-                return "";
-            }
+        formatExplicitFlagUrl(flagUrl) {
+            return String(flagUrl || "").trim();
+        }
 
-            return [...countryCode]
-                .map((letter) =>
-                    String.fromCodePoint(letter.charCodeAt(0) + 127397),
-                )
-                .join("");
+        formatGeneratedFlagUrl(countryCode) {
+            return countryCode
+                ? `https://cdn.ipwhois.io/flags/${countryCode.toLowerCase()}.svg`
+                : "";
         }
 
         getCachedValue(key) {
@@ -371,6 +385,10 @@ const { class: className = "", style } = Astro.props;
             const container = this.querySelector('[data-value="visitorRegion"]');
             const textNode = this.querySelector("[data-region-text]");
             const flagNode = this.querySelector("[data-region-flag]");
+            const flagImageNode = this.querySelector("[data-region-flag-image]");
+            const flagFallbackNode = this.querySelector(
+                "[data-region-flag-fallback]",
+            );
 
             if (container) {
                 container.title = regionText;
@@ -384,14 +402,56 @@ const { class: className = "", style } = Astro.props;
                 return;
             }
 
-            if (region?.flagEmoji) {
-                flagNode.textContent = region.flagEmoji;
+            if (region?.flagUrl && flagImageNode) {
+                const fallbackFlagUrl = String(region.fallbackFlagUrl || "");
+
                 flagNode.title = region.flagAlt || "";
                 flagNode.classList.remove("hidden");
+
+                if (flagFallbackNode) {
+                    flagFallbackNode.textContent = region.flagFallback || "";
+                    flagFallbackNode.classList.toggle(
+                        "hidden",
+                        !region.flagFallback,
+                    );
+                }
+
+                flagImageNode.classList.remove("opacity-100");
+                flagImageNode.classList.add("opacity-0");
+                flagImageNode.onload = () => {
+                    flagImageNode.classList.remove("opacity-0");
+                    flagImageNode.classList.add("opacity-100");
+                    flagFallbackNode?.classList.add("hidden");
+                };
+                flagImageNode.onerror = () => {
+                    if (
+                        fallbackFlagUrl &&
+                        flagImageNode.dataset.triedFallback !== "true"
+                    ) {
+                        flagImageNode.dataset.triedFallback = "true";
+                        flagImageNode.src = fallbackFlagUrl;
+                        return;
+                    }
+
+                    flagImageNode.classList.remove("opacity-100");
+                    flagImageNode.classList.add("opacity-0");
+
+                    if (!flagFallbackNode?.textContent) {
+                        flagNode.classList.add("hidden");
+                    }
+                };
+                flagImageNode.dataset.triedFallback = "false";
+                flagImageNode.removeAttribute("src");
+                flagImageNode.src = region.flagUrl;
                 return;
             }
 
-            flagNode.textContent = "";
+            flagImageNode?.removeAttribute("src");
+            flagImageNode?.classList.remove("opacity-100");
+            flagImageNode?.classList.add("opacity-0");
+            if (flagFallbackNode) {
+                flagFallbackNode.textContent = "";
+            }
             flagNode.removeAttribute("title");
             flagNode.classList.add("hidden");
         }
