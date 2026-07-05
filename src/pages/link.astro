@@ -1,50 +1,11 @@
 ---
 import { Icon } from "astro-icon/components";
+import { friendLinks } from "@/data/friends";
 import I18nKey from "../i18n/i18nKey";
 import { i18n } from "../i18n/translation";
 import MainGridLayout from "../layouts/MainGridLayout.astro";
 
-interface FriendLink {
-    name: string;
-    url: string;
-    avatar: string;
-    label?: string;
-    description?: string;
-    tags?: string[];
-}
-
-const pageTitle = "\u53cb\u60c5\u94fe\u63a5";
-
-const friendsData: FriendLink[] = [
-    {
-        name: "\u304d\u305f\u304c\u308f\u307e\u308a\u3093",
-        url: "https://www.2rk.cc/detail/101vGqIbcE5sbJ1EQ0Ln?id=1",
-        avatar: "/friend-avatars/kitagawa-marin.jpg",
-        label: "\u2764",
-        description: "喜多川海梦",
-    },
-    {
-        name: "莱昂内尔·梅西",
-        url: "https://www.instagram.com/leomessi/",
-        avatar: "/friend-avatars/leomessi.jpg",
-        label: "Instagram",
-        description: "球王",
-    },
-    {
-        name: "\u67f3\u667a\u654f",
-        url: "https://www.instagram.com/katarinabluu/",
-        avatar: "/friend-avatars/katarinabluu.jpg",
-        label: "Instagram",
-        description: "妈妈",
-    },
-    {
-        name: "\u4f0a\u4e1c\u7eaf\u4e5f",
-        url: "https://www.instagram.com/1409junya/",
-        avatar: "/friend-avatars/1409junya.jpg",
-        label: "Instagram",
-        description: "日本国家队足球运动员",
-    },
-];
+const pageTitle = "友情链接";
 ---
 
 <MainGridLayout title={i18n(I18nKey.link)} description={i18n(I18nKey.link)}>
@@ -65,18 +26,18 @@ const friendsData: FriendLink[] = [
                         name="material-symbols:auto-awesome-rounded"
                         class="text-base"
                     />
-                    {friendsData.length} friend{friendsData.length > 1 ? "s" : ""}
+                    共 {friendLinks.length} 个友链
                 </div>
             </div>
 
             <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
                 {
-                    friendsData.map((friend) => (
+                    friendLinks.map((friend) => (
                         <a
                             href={friend.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            aria-label={`Visit ${friend.name}`}
+                            aria-label={`访问 ${friend.name}`}
                             class="group relative overflow-hidden rounded-[1.25rem] border border-black/5 bg-[var(--card-bg)] p-5 no-underline shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-[oklch(0.75_0.12_var(--hue))] hover:shadow-[0_14px_32px_rgba(15,23,42,0.12)] dark:border-white/10 dark:hover:border-[oklch(0.82_0.12_var(--hue))] dark:hover:shadow-[0_14px_36px_rgba(2,6,23,0.4)]"
                         >
                             <div class="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-[oklch(0.78_0.14_var(--hue))] to-transparent opacity-80" />
@@ -87,6 +48,8 @@ const friendsData: FriendLink[] = [
                                         src={friend.avatar}
                                         alt={friend.name}
                                         class="h-full w-full object-cover"
+                                        loading="lazy"
+                                        decoding="async"
                                     />
                                 </div>
 
