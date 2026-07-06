@@ -117,7 +117,7 @@ class SiteStatsController {
     }
 
     async trackPostRead(path: string): Promise<null | PostReadStatsSnapshot> {
-        const postCounterKey = this.buildPostCounterKey(path);
+        const postCounterKey = await this.buildPostCounterKey(path);
         const visitorId = await this.getVisitorId();
         const viewsKey = `${postCounterKey}:views`;
         const readersKey = `${postCounterKey}:readers`;
@@ -241,11 +241,39 @@ class SiteStatsController {
         }
     }
 
-    private buildPostCounterKey(path: string) {
+    private async buildPostCounterKey(path: string) {
         const normalizedPath = this.normalizePostPath(path);
-        const safePath = encodeURIComponent(normalizedPath).replace(/%/g, "~");
+        const hashedPath = await this.hashCounterKey(normalizedPath);
 
-        return `post:${safePath}`;
+        return `post-v2:${hashedPath}`;
+    }
+
+    private async hashCounterKey(value: string) {
+        if (globalThis.crypto?.subtle && globalThis.TextEncoder) {
+            const bytes = new TextEncoder().encode(value);
+            const digest = await globalThis.crypto.subtle.digest(
+                "SHA-256",
+                bytes,
+            );
+
+            return Array.from(new Uint8Array(digest))
+                .map((byte) => byte.toString(16).padStart(2, "0"))
+                .join("")
+                .slice(0, 32);
+        }
+
+        return this.hashCounterKeyFallback(value);
+    }
+
+    private hashCounterKeyFallback(value: string) {
+        let hash = 0x811c9dc5;
+
+        for (let index = 0; index < value.length; index += 1) {
+            hash ^= value.charCodeAt(index);
+            hash = Math.imul(hash, 0x01000193);
+        }
+
+        return `fnv-${(hash >>> 0).toString(16).padStart(8, "0")}`;
     }
 
     private notify() {
