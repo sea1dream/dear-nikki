@@ -8,6 +8,11 @@ type StatsSnapshot = {
     totalVisits: null | number;
 };
 
+export type PostReadStatsSnapshot = {
+    readers: number;
+    views: number;
+};
+
 type StatsListener = (snapshot: StatsSnapshot) => void;
 
 type CounterAction = "get" | "up";
@@ -111,6 +116,39 @@ class SiteStatsController {
         }
     }
 
+    async trackPostRead(path: string): Promise<null | PostReadStatsSnapshot> {
+        const postCounterKey = this.buildPostCounterKey(path);
+        const visitorId = await this.getVisitorId();
+        const viewsKey = `${postCounterKey}:views`;
+        const readersKey = `${postCounterKey}:readers`;
+        const readerKey = `${postCounterKey}:reader:${visitorId}`;
+
+        const [views, existingReaderCount] = await Promise.all([
+            this.requestCounter(viewsKey, "up"),
+            this.requestCounter(readerKey, "get"),
+        ]);
+
+        if (views === null || existingReaderCount === null) {
+            return null;
+        }
+
+        if (existingReaderCount > 0) {
+            const readers = await this.requestCounter(readersKey, "get");
+            return readers === null ? null : { views, readers };
+        }
+
+        const [registeredReader, readers] = await Promise.all([
+            this.requestCounter(readerKey, "up"),
+            this.requestCounter(readersKey, "up"),
+        ]);
+
+        if (registeredReader === null || readers === null) {
+            return null;
+        }
+
+        return { views, readers };
+    }
+
     private async collectStats() {
         const dateKey = this.getDateKey();
         const [todayVisits, totalVisits, totalVisitors] = await Promise.all([
@@ -193,6 +231,23 @@ class SiteStatsController {
         return path.trim() || "/";
     }
 
+    private normalizePostPath(path: string) {
+        const rawPath = path.trim() || window.location.pathname || "/";
+
+        try {
+            return new URL(rawPath, window.location.origin).pathname || "/";
+        } catch {
+            return rawPath.split(/[?#]/)[0] || "/";
+        }
+    }
+
+    private buildPostCounterKey(path: string) {
+        const normalizedPath = this.normalizePostPath(path);
+        const safePath = encodeURIComponent(normalizedPath).replace(/%/g, "~");
+
+        return `post:${safePath}`;
+    }
+
     private notify() {
         for (const listener of this.listeners) {
             listener(this.snapshot);
@@ -262,7 +317,11 @@ export function getSiteStatsController() {
 export async function trackSiteStatsPageView(path?: string) {
     const controller = getSiteStatsController();
     return controller.trackPage(
-        path ??
-            `${window.location.pathname}${window.location.search}`,
+        path ?? `${window.location.pathname}${window.location.search}`,
     );
+}
+
+export async function trackPostReadStats(path?: string) {
+    const controller = getSiteStatsController();
+    return controller.trackPostRead(path ?? window.location.pathname);
 }

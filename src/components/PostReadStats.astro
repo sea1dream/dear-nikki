@@ -1,0 +1,113 @@
+---
+import { Icon } from "astro-icon/components";
+
+interface Props {
+    postPath: string;
+}
+
+const { postPath } = Astro.props;
+---
+
+<post-read-stats
+    data-post-path={postPath}
+    class="mt-6 block border-t border-dashed border-[var(--line-divider)] pt-4"
+    aria-label="文章阅读统计"
+>
+    <div class="flex flex-wrap items-center gap-3 text-sm text-50">
+        <div
+            class="inline-flex min-h-10 items-center gap-2 rounded-full bg-[var(--btn-regular-bg)] px-3.5 py-2 text-[var(--btn-content)] dark:text-white/85"
+        >
+            <Icon
+                name="material-symbols:visibility-outline-rounded"
+                class="text-lg"
+                aria-hidden="true"
+            />
+            <span>阅读量</span>
+            <strong data-value="views" class="tabular-nums text-90">--</strong>
+        </div>
+
+        <div
+            class="inline-flex min-h-10 items-center gap-2 rounded-full bg-[var(--btn-regular-bg)] px-3.5 py-2 text-[var(--btn-content)] dark:text-white/85"
+            title="同一浏览器/设备更换代理后不会重复计入独立读者"
+        >
+            <Icon
+                name="material-symbols:person-check-outline-rounded"
+                class="text-lg"
+                aria-hidden="true"
+            />
+            <span>独立读者</span>
+            <strong data-value="readers" class="tabular-nums text-90">--</strong>
+        </div>
+
+        <span data-status class="hidden text-xs text-50" aria-live="polite">
+        </span>
+    </div>
+</post-read-stats>
+
+<script>
+    // @ts-nocheck
+    import { trackPostReadStats } from "@lib/browser/site-stats";
+
+    class PostReadStats extends HTMLElement {
+        hasLoaded = false;
+
+        connectedCallback() {
+            if (this.hasLoaded) {
+                return;
+            }
+
+            this.hasLoaded = true;
+            void this.loadStats();
+        }
+
+        async loadStats() {
+            const postPath = this.dataset.postPath || window.location.pathname;
+
+            try {
+                const stats = await trackPostReadStats(postPath);
+
+                if (!stats) {
+                    this.setStatus("阅读统计暂时不可用");
+                    return;
+                }
+
+                this.setValue("views", stats.views);
+                this.setValue("readers", stats.readers);
+                this.setStatus("");
+            } catch {
+                this.setStatus("阅读统计暂时不可用");
+            }
+        }
+
+        formatNumber(value) {
+            return new Intl.NumberFormat(
+                document.documentElement.lang || "zh-CN",
+            ).format(value);
+        }
+
+        setValue(key, value) {
+            const node = this.querySelector(`[data-value="${key}"]`);
+
+            if (!node) {
+                return;
+            }
+
+            node.textContent = this.formatNumber(value);
+        }
+
+        setStatus(message) {
+            const node = this.querySelector("[data-status]");
+
+            if (!node) {
+                return;
+            }
+
+            node.textContent = message;
+            node.classList.toggle("hidden", !message);
+        }
+    }
+
+    if (!customElements.get("post-read-stats")) {
+        customElements.define("post-read-stats", PostReadStats);
+    }
+</script>

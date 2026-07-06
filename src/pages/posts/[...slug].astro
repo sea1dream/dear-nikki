@@ -13,6 +13,7 @@ import { Icon } from "astro-icon/components";
 import { licenseConfig } from "src/config";
 import ImageWrapper from "../../components/misc/ImageWrapper.astro";
 import PostMetadata from "../../components/PostMeta.astro";
+import PostReadStats from "../../components/PostReadStats.astro";
 import { profileConfig, siteConfig } from "../../config";
 import { formatDateToYYYYMMDD } from "../../utils/date";
 
@@ -26,6 +27,7 @@ export async function getStaticPaths() {
 
 const { entry } = Astro.props;
 const { Content, headings, remarkPluginFrontmatter } = await entry.render();
+const postPath = getPostUrlBySlug(entry.slug);
 
 const jsonLd = {
     "@context": "https://schema.org",
@@ -167,6 +169,8 @@ const jsonLd = {
                     />
                 )
             }
+
+            <PostReadStats postPath={postPath} />
         </div>
     </div>
 
