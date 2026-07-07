@@ -1,21 +1,53 @@
 <reading-progress
     data-target="#post-container"
-    class="pointer-events-none fixed inset-x-0 top-0 z-[80] h-1"
     aria-hidden="true"
+    data-pagefind-ignore
 >
-    <div
-        data-reading-progress-bar
-        class="h-full origin-left scale-x-0 bg-[var(--primary)] shadow-[0_0_18px_oklch(0.75_0.18_var(--hue)/0.45)]"
-    >
-    </div>
+    <template data-reading-progress-template>
+        <div
+            data-reading-progress-overlay
+            class="pointer-events-none fixed inset-0 z-[90] block"
+        >
+            <div
+                class="fixed inset-x-0 top-0 h-[3px] bg-black/10 dark:bg-white/10"
+            >
+                <div
+                    data-reading-progress-bar
+                    class="h-full origin-left scale-x-0 bg-[var(--primary)] shadow-[0_0_18px_oklch(0.75_0.18_var(--hue)/0.55)] transition-transform duration-150 ease-out"
+                >
+                </div>
+            </div>
+
+            <div
+                class="fixed right-4 top-1/2 hidden -translate-y-1/2 items-center gap-2 rounded-full border border-white/50 bg-[var(--card-bg)] px-2.5 py-2 text-xs text-50 shadow-lg shadow-black/10 backdrop-blur-md dark:border-white/10 lg:flex"
+            >
+                <span class="sr-only">阅读进度</span>
+                <div class="relative h-16 w-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                    <div
+                        data-reading-progress-rail
+                        class="absolute inset-x-0 bottom-0 h-full origin-bottom scale-y-0 rounded-full bg-[var(--primary)] transition-transform duration-150 ease-out"
+                    >
+                    </div>
+                </div>
+                <strong
+                    data-reading-progress-value
+                    class="min-w-9 text-right font-semibold tabular-nums text-90"
+                >
+                    0%
+                </strong>
+            </div>
+        </div>
+    </template>
 </reading-progress>
 
 <script>
     class ReadingProgress extends HTMLElement {
         private frameId: number | null = null;
+        private overlay: HTMLElement | null = null;
         private readonly handleUpdate = () => this.queueUpdate();
 
         connectedCallback() {
+            this.mountOverlay();
             window.addEventListener("scroll", this.handleUpdate, {
                 passive: true,
             });
@@ -31,6 +63,43 @@
                 cancelAnimationFrame(this.frameId);
                 this.frameId = null;
             }
+
+            this.overlay?.remove();
+            this.overlay = null;
+        }
+
+        mountOverlay() {
+            this.overlay?.remove();
+            this.removeStaleOverlays();
+
+            const template = this.querySelector(
+                "[data-reading-progress-template]",
+            );
+
+            if (!(template instanceof HTMLTemplateElement)) {
+                return;
+            }
+
+            const overlay = template.content.firstElementChild?.cloneNode(
+                true,
+            );
+
+            if (!(overlay instanceof HTMLElement)) {
+                return;
+            }
+
+            this.overlay = overlay;
+            document.body.append(overlay);
+        }
+
+        removeStaleOverlays() {
+            document
+                .querySelectorAll("[data-reading-progress-overlay]")
+                .forEach((node) => {
+                    if (node !== this.overlay) {
+                        node.remove();
+                    }
+                });
         }
 
         queueUpdate() {
@@ -47,7 +116,17 @@
         updateProgress() {
             const targetSelector = this.dataset.target || "#post-container";
             const target = document.querySelector(targetSelector);
-            const bar = this.querySelector("[data-reading-progress-bar]");
+            const progressRoot = this.overlay || this;
+            this.removeStaleOverlays();
+            const bar = progressRoot.querySelector(
+                "[data-reading-progress-bar]",
+            );
+            const rail = progressRoot.querySelector(
+                "[data-reading-progress-rail]",
+            );
+            const value = progressRoot.querySelector(
+                "[data-reading-progress-value]",
+            );
 
             if (!target || !(bar instanceof HTMLElement)) {
                 return;
@@ -55,14 +134,31 @@
 
             const targetRect = target.getBoundingClientRect();
             const targetTop = targetRect.top + window.scrollY;
-            const readableHeight = Math.max(
-                target.scrollHeight - window.innerHeight * 0.55,
-                1,
-            );
-            const current = window.scrollY - targetTop + window.innerHeight * 0.12;
+            const targetHeight = target.scrollHeight;
+            const targetBottom = targetTop + targetHeight;
+            const viewportHeight = window.innerHeight;
+            const viewportBottom = window.scrollY + viewportHeight;
+            const start = targetTop - viewportHeight * 0.15;
+            const end = targetBottom - viewportHeight * 0.75;
+            const readableHeight = Math.max(end - start, 1);
+            const current = window.scrollY - start;
             const progress = Math.min(Math.max(current / readableHeight, 0), 1);
+            const resolvedProgress =
+                targetHeight <= viewportHeight * 0.75 &&
+                viewportBottom >= targetBottom
+                    ? 1
+                    : progress;
+            const percentage = Math.round(resolvedProgress * 100);
 
-            bar.style.transform = `scaleX(${progress})`;
+            bar.style.transform = `scaleX(${resolvedProgress})`;
+
+            if (rail instanceof HTMLElement) {
+                rail.style.transform = `scaleY(${resolvedProgress})`;
+            }
+
+            if (value instanceof HTMLElement) {
+                value.textContent = `${percentage}%`;
+            }
         }
     }
 
