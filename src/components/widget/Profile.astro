@@ -5,6 +5,16 @@ import { url } from "../../utils/url";
 import ImageWrapper from "../misc/ImageWrapper.astro";
 
 const config = profileConfig;
+const nameFlags = [
+    {
+        src: url("/flags/argentina.svg"),
+        alt: "阿根廷国旗",
+    },
+    {
+        src: url("/flags/japan.svg"),
+        alt: "日本国旗",
+    },
+];
 ---
 
 <div class="card-base p-3">
@@ -31,9 +41,25 @@ const config = profileConfig;
     </a>
     <div class="px-2">
         <div
-            class="font-bold text-xl text-center mb-1 dark:text-neutral-50 transition"
+            class="mb-1 flex items-center justify-center gap-2 text-center font-bold text-xl dark:text-neutral-50 transition"
         >
-            {config.name}
+            <img
+                src={nameFlags[0].src}
+                alt={nameFlags[0].alt}
+                width="24"
+                height="16"
+                class="h-4 w-6 flex-none rounded-[0.125rem] object-cover shadow-sm shadow-black/15"
+                loading="lazy"
+            />
+            <span class="min-w-0 truncate">{config.name}</span>
+            <img
+                src={nameFlags[1].src}
+                alt={nameFlags[1].alt}
+                width="24"
+                height="16"
+                class="h-4 w-6 flex-none rounded-[0.125rem] object-cover shadow-sm shadow-black/15"
+                loading="lazy"
+            />
         </div>
         <div
             class="h-1 w-5 bg-[var(--primary)] mx-auto rounded-full mb-2 transition"
