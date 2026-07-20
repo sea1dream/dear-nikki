@@ -13,6 +13,6 @@ draft: false
 
   生活又看不到未来了。
   
-  顺便挂一个脑残：
+  顺便挂一个傻逼，真神人一个：
   ![alt text](image.png)
 
