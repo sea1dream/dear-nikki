@@ -17,28 +17,35 @@ const nameFlags = [
 ];
 ---
 
-<div class="card-base p-3">
-    <a
-        aria-label="Go to About Page"
-        href={url("/about/")}
-        class="group block relative mx-auto mt-1 lg:mx-0 lg:mt-0 mb-3
-       max-w-[12rem] lg:max-w-none overflow-hidden rounded-xl active:scale-95"
+<div class="profile-card card-base p-3">
+    <div
+        class="profile-avatar-orbit relative mx-auto mb-5 mt-3 h-44 w-44 sm:h-48 sm:w-48 lg:h-[13rem] lg:w-[13rem]"
     >
-        <div
-            class="absolute transition pointer-events-none group-hover:bg-black/30 group-active:bg-black/50
-        w-full h-full z-50 flex items-center justify-center"
+        <span class="profile-avatar-loop" aria-hidden="true"></span>
+        <span class="profile-avatar-loop" aria-hidden="true"></span>
+        <span class="profile-avatar-loop" aria-hidden="true"></span>
+        <span class="profile-avatar-loop" aria-hidden="true"></span>
+
+        <a
+            aria-label="Go to About Page"
+            href={url("/about/")}
+            class="profile-avatar-link group absolute inset-0 z-10 block overflow-hidden rounded-full active:scale-95"
         >
-            <Icon
-                name="fa6-regular:address-card"
-                class="transition opacity-0 scale-90 group-hover:scale-100 group-hover:opacity-100 text-white text-5xl"
+            <div
+                class="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-full transition group-hover:bg-black/30 group-active:bg-black/50"
+            >
+                <Icon
+                    name="fa6-regular:address-card"
+                    class="scale-90 text-5xl text-white opacity-0 transition group-hover:scale-100 group-hover:opacity-100"
+                />
+            </div>
+            <ImageWrapper
+                src={config.avatar || ""}
+                alt="Profile Image of the Author"
+                class="h-full w-full rounded-full"
             />
-        </div>
-        <ImageWrapper
-            src={config.avatar || ""}
-            alt="Profile Image of the Author"
-            class="mx-auto lg:w-full h-full lg:mt-0"
-        />
-    </a>
+        </a>
+    </div>
     <div class="px-2">
         <div
             class="mb-1 flex items-center justify-center gap-2 text-center font-bold text-xl dark:text-neutral-50 transition"
@@ -103,3 +110,82 @@ const nameFlags = [
         </div>
     </div>
 </div>
+
+<style>
+    .profile-avatar-orbit {
+        isolation: isolate;
+    }
+
+    .profile-card {
+        overflow: visible;
+    }
+
+    .profile-avatar-loop {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        border-radius: 38% 62% 63% 37% / 41% 44% 56% 59%;
+        background: var(--primary);
+        opacity: var(--loop-opacity);
+        pointer-events: none;
+        transform-origin: center;
+        animation: profile-avatar-orbit var(--loop-duration) linear infinite;
+        will-change: transform;
+    }
+
+    .profile-avatar-loop:nth-of-type(1) {
+        --loop-angle: 30deg;
+        --loop-duration: 10s;
+        --loop-opacity: 0.2;
+    }
+
+    .profile-avatar-loop:nth-of-type(2) {
+        --loop-angle: 60deg;
+        --loop-duration: 15s;
+        --loop-opacity: 0.32;
+    }
+
+    .profile-avatar-loop:nth-of-type(3) {
+        --loop-angle: 90deg;
+        --loop-duration: 10s;
+        --loop-opacity: 0.2;
+    }
+
+    .profile-avatar-loop:nth-of-type(4) {
+        --loop-angle: 120deg;
+        --loop-duration: 15s;
+        --loop-opacity: 0.32;
+    }
+
+    .profile-avatar-link {
+        box-shadow:
+            0 0 0 3px var(--card-bg),
+            0 12px 28px rgb(15 23 42 / 18%);
+        transition:
+            transform 200ms ease,
+            box-shadow 300ms ease;
+    }
+
+    .profile-avatar-orbit:hover .profile-avatar-link {
+        box-shadow:
+            0 0 0 3px var(--card-bg),
+            0 16px 34px oklch(0.5 0.12 var(--hue) / 24%);
+    }
+
+    @keyframes profile-avatar-orbit {
+        from {
+            transform: rotate(var(--loop-angle));
+        }
+
+        to {
+            transform: rotate(calc(var(--loop-angle) + 360deg));
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .profile-avatar-loop {
+            animation: none;
+            transform: rotate(var(--loop-angle));
+        }
+    }
+</style>
