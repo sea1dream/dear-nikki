@@ -1,5 +1,6 @@
 {
   "version": 1,
+
   "skills": {
     "deploy-to-vercel": {
       "source": "vercel-labs/agent-skills",
