@@ -17,6 +17,9 @@ type StatsListener = (snapshot: StatsSnapshot) => void;
 
 type CounterAction = "get" | "up";
 
+const COUNTER_API_BASE_URL = "https://countapi.mileshilliard.com/api/v1";
+const COUNTER_REQUEST_TIMEOUT_MS = 8_000;
+
 const DEFAULT_SNAPSHOT: StatsSnapshot = {
     todayVisits: null,
     totalVisits: null,
@@ -284,13 +287,19 @@ class SiteStatsController {
 
     private async requestCounter(name: string, action: CounterAction) {
         const endpoint = this.buildCounterEndpoint(name, action);
+        const abortController = new AbortController();
+        const timeoutId = window.setTimeout(
+            () => abortController.abort(),
+            COUNTER_REQUEST_TIMEOUT_MS,
+        );
 
         try {
             const response = await fetch(endpoint, {
                 cache: "no-store",
+                signal: abortController.signal,
             });
 
-            if (action === "get" && response.status === 400) {
+            if (action === "get" && response.status === 404) {
                 return 0;
             }
 
@@ -298,23 +307,25 @@ class SiteStatsController {
                 return null;
             }
 
-            const data = (await response.json()) as { count?: number };
-            return typeof data.count === "number" ? data.count : null;
+            const data = (await response.json()) as {
+                value?: number | string;
+            };
+            const value = Number(data.value);
+
+            return Number.isSafeInteger(value) && value >= 0 ? value : null;
         } catch (error) {
             console.error("Failed to request site stats counter", error);
             return null;
+        } finally {
+            window.clearTimeout(timeoutId);
         }
     }
 
     private buildCounterEndpoint(name: string, action: CounterAction) {
-        const encodedNamespace = encodeURIComponent(this.namespace);
-        const encodedName = encodeURIComponent(name);
+        const key = encodeURIComponent(`${this.namespace}:${name}`);
+        const operation = action === "up" ? "hit" : "get";
 
-        if (action === "up") {
-            return `https://api.counterapi.dev/v1/${encodedNamespace}/${encodedName}/up`;
-        }
-
-        return `https://api.counterapi.dev/v1/${encodedNamespace}/${encodedName}/`;
+        return `${COUNTER_API_BASE_URL}/${operation}/${key}`;
     }
 
     private resolveNamespace() {
