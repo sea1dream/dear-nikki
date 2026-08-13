@@ -329,7 +329,7 @@ class SiteStatsController {
     }
 
     private resolveNamespace() {
-        const baseNamespace = "dear-nikki-sea1dream-stats";
+        const baseNamespace = "seadream-site-stats-v2";
         const hostname = window.location.hostname;
         const isLocalHost =
             hostname === "localhost" ||

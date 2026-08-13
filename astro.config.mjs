@@ -25,9 +25,14 @@ import { parseDirectiveNode } from "./src/plugins/remark-directive-rehype.js";
 import { remarkExcerpt } from "./src/plugins/remark-excerpt.js";
 import { remarkReadingTime } from "./src/plugins/remark-reading-time.mjs";
 
+const productionHostname = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+const siteUrl = productionHostname
+    ? `https://${productionHostname}`
+    : "http://localhost:4321";
+
 // https://astro.build/config
 export default defineConfig({
-    site: "https://seadream.vercel.app/",
+    site: siteUrl,
     base: "/",
     trailingSlash: "always",
     integrations: [
