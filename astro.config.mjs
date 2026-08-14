@@ -19,6 +19,7 @@ import remarkSectionize from "remark-sectionize";
 import { expressiveCodeConfig } from "./src/config.ts";
 import { pluginCopyButton } from "./src/plugins/expressive-code/copy-button.js";
 import { pluginLanguageBadge } from "./src/plugins/expressive-code/language-badge.ts";
+import { pluginLongCodeBlock } from "./src/plugins/expressive-code/long-code-block.ts";
 import { AdmonitionComponent } from "./src/plugins/rehype-component-admonition.mjs";
 import { GithubCardComponent } from "./src/plugins/rehype-component-github-card.mjs";
 import { parseDirectiveNode } from "./src/plugins/remark-directive-rehype.js";
@@ -65,6 +66,7 @@ export default defineConfig({
                 pluginCollapsibleSections(),
                 pluginLineNumbers(),
                 pluginLanguageBadge(),
+                pluginLongCodeBlock({ chunkSize: 32, lineHeightRem: 1.5 }),
                 pluginCopyButton(),
             ],
             defaultProps: {

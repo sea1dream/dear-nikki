@@ -41,31 +41,81 @@
 </reading-progress>
 
 <script>
+    type ProgressMetrics = {
+        readableHeight: number;
+        start: number;
+        targetBottom: number;
+        targetHeight: number;
+        viewportHeight: number;
+    };
+
     class ReadingProgress extends HTMLElement {
+        private bar: HTMLElement | null = null;
         private frameId: number | null = null;
+        private lastPercentage = -1;
+        private measureFrameId: number | null = null;
+        private metrics: ProgressMetrics | null = null;
         private overlay: HTMLElement | null = null;
-        private readonly handleUpdate = () => this.queueUpdate();
+        private rail: HTMLElement | null = null;
+        private resizeObserver: ResizeObserver | null = null;
+        private target: HTMLElement | null = null;
+        private value: HTMLElement | null = null;
+        private readonly handleResize = () => this.queueMeasure();
+        private readonly handleScroll = () => this.queueUpdate();
 
         connectedCallback() {
+            this.lastPercentage = -1;
             this.mountOverlay();
-            window.addEventListener("scroll", this.handleUpdate, {
+            this.target = document.querySelector<HTMLElement>(
+                this.dataset.target || "#post-container",
+            );
+
+            if (this.target && "ResizeObserver" in window) {
+                this.resizeObserver = new ResizeObserver(() => {
+                    this.queueMeasure();
+                });
+                this.resizeObserver.observe(this.target);
+            }
+
+            window.addEventListener("scroll", this.handleScroll, {
                 passive: true,
             });
-            window.addEventListener("resize", this.handleUpdate);
-            this.queueUpdate();
+            window.addEventListener("resize", this.handleResize);
+            window.addEventListener("load", this.handleResize);
+
+            void document.fonts?.ready.then(() => {
+                if (this.isConnected) {
+                    this.queueMeasure();
+                }
+            });
+
+            this.queueMeasure();
         }
 
         disconnectedCallback() {
-            window.removeEventListener("scroll", this.handleUpdate);
-            window.removeEventListener("resize", this.handleUpdate);
+            window.removeEventListener("scroll", this.handleScroll);
+            window.removeEventListener("resize", this.handleResize);
+            window.removeEventListener("load", this.handleResize);
+            this.resizeObserver?.disconnect();
+            this.resizeObserver = null;
 
             if (this.frameId !== null) {
                 cancelAnimationFrame(this.frameId);
                 this.frameId = null;
             }
 
+            if (this.measureFrameId !== null) {
+                cancelAnimationFrame(this.measureFrameId);
+                this.measureFrameId = null;
+            }
+
             this.overlay?.remove();
             this.overlay = null;
+            this.bar = null;
+            this.rail = null;
+            this.target = null;
+            this.value = null;
+            this.metrics = null;
         }
 
         mountOverlay() {
@@ -90,6 +140,15 @@
 
             this.overlay = overlay;
             document.body.append(overlay);
+            this.bar = overlay.querySelector<HTMLElement>(
+                "[data-reading-progress-bar]",
+            );
+            this.rail = overlay.querySelector<HTMLElement>(
+                "[data-reading-progress-rail]",
+            );
+            this.value = overlay.querySelector<HTMLElement>(
+                "[data-reading-progress-value]",
+            );
         }
 
         removeStaleOverlays() {
@@ -100,6 +159,41 @@
                         node.remove();
                     }
                 });
+        }
+
+        queueMeasure() {
+            if (this.measureFrameId !== null) {
+                return;
+            }
+
+            this.measureFrameId = requestAnimationFrame(() => {
+                this.measureFrameId = null;
+                this.measureProgress();
+                this.updateProgress();
+            });
+        }
+
+        measureProgress() {
+            if (!this.target) {
+                this.metrics = null;
+                return;
+            }
+
+            const targetRect = this.target.getBoundingClientRect();
+            const targetTop = targetRect.top + window.scrollY;
+            const targetHeight = this.target.scrollHeight;
+            const targetBottom = targetTop + targetHeight;
+            const viewportHeight = window.innerHeight;
+            const start = targetTop - viewportHeight * 0.15;
+            const end = targetBottom - viewportHeight * 0.75;
+
+            this.metrics = {
+                readableHeight: Math.max(end - start, 1),
+                start,
+                targetBottom,
+                targetHeight,
+                viewportHeight,
+            };
         }
 
         queueUpdate() {
@@ -114,35 +208,24 @@
         }
 
         updateProgress() {
-            const targetSelector = this.dataset.target || "#post-container";
-            const target = document.querySelector(targetSelector);
-            const progressRoot = this.overlay || this;
-            this.removeStaleOverlays();
-            const bar = progressRoot.querySelector(
-                "[data-reading-progress-bar]",
-            );
-            const rail = progressRoot.querySelector(
-                "[data-reading-progress-rail]",
-            );
-            const value = progressRoot.querySelector(
-                "[data-reading-progress-value]",
-            );
-
-            if (!target || !(bar instanceof HTMLElement)) {
+            if (!this.metrics || !this.bar) {
                 return;
             }
 
-            const targetRect = target.getBoundingClientRect();
-            const targetTop = targetRect.top + window.scrollY;
-            const targetHeight = target.scrollHeight;
-            const targetBottom = targetTop + targetHeight;
-            const viewportHeight = window.innerHeight;
-            const viewportBottom = window.scrollY + viewportHeight;
-            const start = targetTop - viewportHeight * 0.15;
-            const end = targetBottom - viewportHeight * 0.75;
-            const readableHeight = Math.max(end - start, 1);
-            const current = window.scrollY - start;
-            const progress = Math.min(Math.max(current / readableHeight, 0), 1);
+            const {
+                readableHeight,
+                start,
+                targetBottom,
+                targetHeight,
+                viewportHeight,
+            } = this.metrics;
+            const scrollY = window.scrollY;
+            const viewportBottom = scrollY + viewportHeight;
+            const current = scrollY - start;
+            const progress = Math.min(
+                Math.max(current / readableHeight, 0),
+                1,
+            );
             const resolvedProgress =
                 targetHeight <= viewportHeight * 0.75 &&
                 viewportBottom >= targetBottom
@@ -150,14 +233,15 @@
                     : progress;
             const percentage = Math.round(resolvedProgress * 100);
 
-            bar.style.transform = `scaleX(${resolvedProgress})`;
+            this.bar.style.transform = `scaleX(${resolvedProgress})`;
 
-            if (rail instanceof HTMLElement) {
-                rail.style.transform = `scaleY(${resolvedProgress})`;
+            if (this.rail) {
+                this.rail.style.transform = `scaleY(${resolvedProgress})`;
             }
 
-            if (value instanceof HTMLElement) {
-                value.textContent = `${percentage}%`;
+            if (this.value && percentage !== this.lastPercentage) {
+                this.value.textContent = `${percentage}%`;
+                this.lastPercentage = percentage;
             }
         }
     }

@@ -64,21 +64,46 @@ const {
 <script>
     // @ts-nocheck
     class GiscusComments extends HTMLElement {
+        loaderObserver = null;
         observer = null;
         themeFrame = null;
 
         connectedCallback() {
-            this.loadGiscus();
+            this.loadWhenVisible();
             this.observeTheme();
         }
 
         disconnectedCallback() {
+            this.loaderObserver?.disconnect();
+            this.loaderObserver = null;
             this.observer?.disconnect();
 
             if (this.themeFrame !== null) {
                 cancelAnimationFrame(this.themeFrame);
                 this.themeFrame = null;
             }
+        }
+
+        loadWhenVisible() {
+            if (!("IntersectionObserver" in window)) {
+                this.loadGiscus();
+                return;
+            }
+
+            this.loaderObserver?.disconnect();
+            this.loaderObserver = new IntersectionObserver(
+                (entries) => {
+                    if (!entries.some((entry) => entry.isIntersecting)) {
+                        return;
+                    }
+
+                    this.loaderObserver?.disconnect();
+                    this.loaderObserver = null;
+                    this.loadGiscus();
+                },
+                { rootMargin: "800px 0px" },
+            );
+            this.loaderObserver.observe(this);
         }
 
         loadGiscus() {
