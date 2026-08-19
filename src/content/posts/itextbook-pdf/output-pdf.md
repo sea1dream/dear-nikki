@@ -1,8 +1,8 @@
 ---
 title: itextbook下载PDF
 published: 2026-08-19
-description: 
-tags: js
+description: ""
+tags: [js]
 category: 生活小技巧
 draft: false
 
