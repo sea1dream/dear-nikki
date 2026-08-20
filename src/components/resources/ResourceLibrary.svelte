@@ -524,6 +524,7 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                             <div class="flex shrink-0 items-center gap-2 pl-[5.5rem] sm:pl-0">
                                 <a
                                     href={`/resources/view/?id=${encodeURIComponent(resource.id)}`}
+                                    data-no-swup
                                     class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 text-sm font-semibold text-white no-underline transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
                                 >
                                     <Icon icon="material-symbols:menu-book-rounded" width="18" />

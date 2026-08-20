@@ -742,6 +742,7 @@ function unlockPdf(): void {
 
 <section
     bind:this={readerShell}
+    data-no-swup
     class="pdf-reader-shell relative overflow-hidden rounded-lg"
 >
     <div class="card-base flex h-full flex-col overflow-hidden rounded-lg">
@@ -1047,6 +1048,7 @@ function unlockPdf(): void {
         :global(body:has(.pdf-reader-shell) #top-row),
         :global(body:has(.pdf-reader-shell) #banner-wrapper),
         :global(body:has(.pdf-reader-shell) #banner-credit),
+        :global(body:has(.pdf-reader-shell) #sidebar),
         :global(body:has(.pdf-reader-shell) .footer),
         :global(body:has(.pdf-reader-shell) .back-to-top-wrapper) {
             display: none !important;
