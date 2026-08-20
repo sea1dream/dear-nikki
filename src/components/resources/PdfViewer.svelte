@@ -33,6 +33,9 @@ const MIN_SCALE = 0.25;
 const MAX_SCALE = 3;
 const PAGE_RENDER_MARGIN = "1600px 0px";
 const PROGRESS_SAVE_DELAY = 350;
+const MAX_CANVAS_PIXELS = 18_000_000;
+const MAX_OUTPUT_SCALE = 8;
+const OUTPUT_QUALITY_DELAY = 180;
 
 let resource: ResourceItem | null = null;
 let pdfDocument: PDFDocumentProxy | null = null;
@@ -43,6 +46,7 @@ let resizeObserver: ResizeObserver | null = null;
 let renderObserver: IntersectionObserver | null = null;
 let resizeFrame = 0;
 let scrollFrame = 0;
+let outputQualityTimer = 0;
 let viewRefreshSequence = 0;
 let progressSaveTimer = 0;
 let resumeNoticeTimer = 0;
@@ -57,6 +61,7 @@ let pages: PageState[] = [];
 let viewerWidth = 900;
 let zoom = 1;
 let actualScale = 1;
+let visualViewportScale = 1;
 let fitWidth = true;
 let rotation = 0;
 let readingPercent = 0;
@@ -118,14 +123,69 @@ function getPageScale(page: PageState): number {
     return clamp(availablePageWidth() / width, MIN_FIT_SCALE, MAX_SCALE);
 }
 
+function readVisualViewportScale(): number {
+    const scale = window.visualViewport?.scale ?? 1;
+    return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+function isPageVisibleOnScreen(number: number): boolean {
+    const element = pageElements.get(number);
+    if (!element || !viewerStage) return number === pageNumber;
+
+    const pageRect = element.getBoundingClientRect();
+    const stageRect = viewerStage.getBoundingClientRect();
+    const visualViewport = window.visualViewport;
+    const viewportLeft = visualViewport?.pageLeft ?? window.scrollX;
+    const viewportTop = visualViewport?.pageTop ?? window.scrollY;
+    const viewportRight =
+        viewportLeft + (visualViewport?.width ?? window.innerWidth);
+    const viewportBottom =
+        viewportTop + (visualViewport?.height ?? window.innerHeight);
+    const pageLeft = pageRect.left + window.scrollX;
+    const pageTop = pageRect.top + window.scrollY;
+    const pageRight = pageRect.right + window.scrollX;
+    const pageBottom = pageRect.bottom + window.scrollY;
+    const stageLeft = stageRect.left + window.scrollX;
+    const stageTop = stageRect.top + window.scrollY;
+    const stageRight = stageRect.right + window.scrollX;
+    const stageBottom = stageRect.bottom + window.scrollY;
+
+    return (
+        pageRight > Math.max(stageLeft, viewportLeft) &&
+        pageLeft < Math.min(stageRight, viewportRight) &&
+        pageBottom > Math.max(stageTop, viewportTop) &&
+        pageTop < Math.min(stageBottom, viewportBottom)
+    );
+}
+
+function getOutputScale(page: PageState, number: number): number {
+    const [baseWidth, baseHeight] = rotatedDimensions(page);
+    const pageScale = getPageScale(page);
+    const pagePixels = Math.max(
+        baseWidth * pageScale * baseHeight * pageScale,
+        1,
+    );
+    // Native pinch zoom enlarges the existing bitmap, so only boost pages that
+    // are actually on screen to keep high-DPI rendering within a sane budget.
+    const pinchScale = isPageVisibleOnScreen(number) ? visualViewportScale : 1;
+    const requestedScale =
+        Math.max(window.devicePixelRatio || 1, 1) * pinchScale;
+
+    return clamp(
+        Math.min(requestedScale, Math.sqrt(MAX_CANVAS_PIXELS / pagePixels)),
+        0.6,
+        MAX_OUTPUT_SCALE,
+    );
+}
+
 function pageStyle(page: PageState): string {
     const [baseWidth, baseHeight] = rotatedDimensions(page);
     const scale = getPageScale(page);
     return `width:${Math.max(Math.round(baseWidth * scale), 1)}px;height:${Math.max(Math.round(baseHeight * scale), 1)}px`;
 }
 
-function renderKey(page: PageState): string {
-    return `${rotation}:${getPageScale(page).toFixed(4)}`;
+function renderKey(page: PageState, number: number): string {
+    return `${rotation}:${getPageScale(page).toFixed(4)}:${getOutputScale(page, number).toFixed(3)}`;
 }
 
 function markPage(
@@ -223,7 +283,7 @@ async function renderPage(number: number): Promise<void> {
 
     const pdfPage = await pdfDocument.getPage(number);
     updatePageDimensions(pageState, pdfPage);
-    const key = renderKey(pageState);
+    const key = renderKey(pageState, number);
     if (pageState.status === "rendered" && pageState.renderedKey === key) {
         return;
     }
@@ -241,16 +301,7 @@ async function renderPage(number: number): Promise<void> {
             scale: getPageScale(pageState),
             rotation,
         });
-        const deviceScale = Math.min(window.devicePixelRatio || 1, 2);
-        const maximumPixels = 18_000_000;
-        const pixelScale = clamp(
-            Math.min(
-                deviceScale,
-                Math.sqrt(maximumPixels / (viewport.width * viewport.height)),
-            ),
-            0.6,
-            2,
-        );
+        const pixelScale = getOutputScale(pageState, number);
         const context = canvas.getContext("2d", { alpha: false });
         if (!context) throw new Error("浏览器无法创建 PDF 画布");
 
@@ -459,7 +510,30 @@ function handleViewerScroll(): void {
     scrollFrame = window.requestAnimationFrame(() => {
         scrollFrame = 0;
         syncReadingProgress();
+        if (visualViewportScale > 1.01) scheduleOutputQualityRefresh();
     });
+}
+
+function refreshOutputQuality(): void {
+    for (const number of nearPages) {
+        const page = pages[number - 1];
+        if (page && page.renderedKey !== renderKey(page, number)) {
+            void renderPage(number);
+        }
+    }
+}
+
+function scheduleOutputQualityRefresh(): void {
+    window.clearTimeout(outputQualityTimer);
+    outputQualityTimer = window.setTimeout(
+        refreshOutputQuality,
+        OUTPUT_QUALITY_DELAY,
+    );
+}
+
+function handleVisualViewportChange(): void {
+    visualViewportScale = readVisualViewportScale();
+    scheduleOutputQualityRefresh();
 }
 
 async function refreshRenderedPages(
@@ -565,6 +639,15 @@ async function openPdf(): Promise<void> {
 }
 
 onMount(() => {
+    visualViewportScale = readVisualViewportScale();
+    window.visualViewport?.addEventListener(
+        "resize",
+        handleVisualViewportChange,
+    );
+    window.visualViewport?.addEventListener(
+        "scroll",
+        handleVisualViewportChange,
+    );
     openPdf().catch((error) => {
         errorMessage = error instanceof Error ? error.message : "PDF 加载失败";
         loading = false;
@@ -576,10 +659,19 @@ onDestroy(() => {
     saveReadingPosition();
     window.cancelAnimationFrame(resizeFrame);
     window.cancelAnimationFrame(scrollFrame);
+    window.clearTimeout(outputQualityTimer);
     window.clearTimeout(progressSaveTimer);
     window.clearTimeout(resumeNoticeTimer);
     resizeObserver?.disconnect();
     renderObserver?.disconnect();
+    window.visualViewport?.removeEventListener(
+        "resize",
+        handleVisualViewportChange,
+    );
+    window.visualViewport?.removeEventListener(
+        "scroll",
+        handleVisualViewportChange,
+    );
     renderTasks.forEach((task) => {
         task.cancel();
     });
