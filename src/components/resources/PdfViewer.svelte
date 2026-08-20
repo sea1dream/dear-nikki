@@ -51,6 +51,7 @@ let viewRefreshSequence = 0;
 let progressSaveTimer = 0;
 let resumeNoticeTimer = 0;
 let viewRefreshing = false;
+let progressReady = false;
 let loading = true;
 let loadProgress = 0;
 let errorMessage = "";
@@ -77,7 +78,7 @@ const nearPages = new Set<number>();
 const renderTasks = new Map<number, RenderTask>();
 const renderVersions = new Map<number, number>();
 
-$: actualScale = pages[0] ? getPageScale(pages[0]) : 1;
+$: actualScale = pages[0] ? getPageScale(pages[0], viewerWidth) : 1;
 
 function clamp(value: number, minimum: number, maximum: number): number {
     return Math.min(Math.max(value, minimum), maximum);
@@ -112,15 +113,19 @@ function rotatedDimensions(page: PageState): [number, number] {
         : [page.baseHeight, page.baseWidth];
 }
 
-function availablePageWidth(): number {
-    const gutter = viewerWidth < 640 ? 8 : 48;
-    return Math.min(Math.max(viewerWidth - gutter, 1), MAX_FIT_WIDTH);
+function availablePageWidth(width = viewerWidth): number {
+    const gutter = width < 640 ? 8 : 48;
+    return Math.min(Math.max(width - gutter, 1), MAX_FIT_WIDTH);
 }
 
-function getPageScale(page: PageState): number {
+function getPageScale(page: PageState, width = viewerWidth): number {
     if (!fitWidth) return zoom;
-    const [width] = rotatedDimensions(page);
-    return clamp(availablePageWidth() / width, MIN_FIT_SCALE, MAX_SCALE);
+    const [pageWidth] = rotatedDimensions(page);
+    return clamp(
+        availablePageWidth(width) / pageWidth,
+        MIN_FIT_SCALE,
+        MAX_SCALE,
+    );
 }
 
 function readVisualViewportScale(): number {
@@ -178,9 +183,9 @@ function getOutputScale(page: PageState, number: number): number {
     );
 }
 
-function pageStyle(page: PageState): string {
+function pageStyle(page: PageState, width: number): string {
     const [baseWidth, baseHeight] = rotatedDimensions(page);
-    const scale = getPageScale(page);
+    const scale = getPageScale(page, width);
     return `width:${Math.max(Math.round(baseWidth * scale), 1)}px;height:${Math.max(Math.round(baseHeight * scale), 1)}px`;
 }
 
@@ -418,12 +423,18 @@ function captureReadingPosition(number = pageNumber): ReadingPosition {
 }
 
 function progressStorageKey(): string | null {
+    const fingerprint = pdfDocument?.fingerprints[0];
+    if (fingerprint) return `pdf-reading-progress:v2:${fingerprint}`;
+    return resource ? `pdf-reading-progress:${resource.id}` : null;
+}
+
+function legacyProgressStorageKey(): string | null {
     return resource ? `pdf-reading-progress:${resource.id}` : null;
 }
 
 function saveReadingPosition(): void {
     const key = progressStorageKey();
-    if (!key || !pageCount) return;
+    if (!progressReady || !key || !pageCount) return;
     try {
         localStorage.setItem(
             key,
@@ -442,28 +453,54 @@ function scheduleProgressSave(): void {
     );
 }
 
+function flushProgressSave(): void {
+    window.clearTimeout(progressSaveTimer);
+    progressSaveTimer = 0;
+    saveReadingPosition();
+}
+
 function readStoredPosition(): ReadingPosition | null {
-    const key = progressStorageKey();
-    if (!key) return null;
-    try {
-        const parsed = JSON.parse(
-            localStorage.getItem(key) ?? "null",
-        ) as Partial<ReadingPosition> | null;
-        if (
-            parsed?.version !== 1 ||
-            typeof parsed.page !== "number" ||
-            typeof parsed.offset !== "number"
-        ) {
-            return null;
+    const keys = new Set(
+        [progressStorageKey(), legacyProgressStorageKey()].filter(
+            (key): key is string => Boolean(key),
+        ),
+    );
+
+    for (const key of keys) {
+        try {
+            const parsed = JSON.parse(
+                localStorage.getItem(key) ?? "null",
+            ) as Partial<ReadingPosition> | null;
+            const page = parsed?.page;
+            const offset = parsed?.offset;
+            if (
+                parsed?.version !== 1 ||
+                typeof page !== "number" ||
+                !Number.isFinite(page) ||
+                typeof offset !== "number" ||
+                !Number.isFinite(offset)
+            ) {
+                continue;
+            }
+            return {
+                version: 1,
+                page: clamp(Math.round(page), 1, pageCount),
+                offset: clamp(offset, 0, 0.999),
+            };
+        } catch {
+            // Ignore malformed or unavailable browser storage and try fallback keys.
         }
-        return {
-            version: 1,
-            page: clamp(Math.round(parsed.page), 1, pageCount),
-            offset: clamp(parsed.offset, 0, 0.999),
-        };
-    } catch {
-        return null;
     }
+
+    return null;
+}
+
+function handleVisibilityChange(): void {
+    if (document.visibilityState === "hidden") flushProgressSave();
+}
+
+function handlePageHide(): void {
+    flushProgressSave();
 }
 
 function scrollToPosition(position: ReadingPosition, smooth = false): void {
@@ -502,7 +539,7 @@ function syncReadingProgress(): void {
         scrollable > 0
             ? Math.round((viewerStage.scrollTop / scrollable) * 100)
             : 0;
-    scheduleProgressSave();
+    if (progressReady) scheduleProgressSave();
 }
 
 function handleViewerScroll(): void {
@@ -579,6 +616,7 @@ function setupResizeObserver(): void {
 }
 
 async function openPdf(): Promise<void> {
+    progressReady = false;
     resource = await fetchResource();
     const pdfjs = await import("pdfjs-dist");
     pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -621,8 +659,7 @@ async function openPdf(): Promise<void> {
 
     await tick();
     viewerWidth = Math.round(viewerStage.clientWidth) || viewerWidth;
-    setupRenderObserver();
-    setupResizeObserver();
+    pages = [...pages];
     await tick();
 
     const storedPosition = readStoredPosition();
@@ -635,6 +672,12 @@ async function openPdf(): Promise<void> {
             }, 2800);
         }
     }
+    await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+    });
+    setupRenderObserver();
+    setupResizeObserver();
+    progressReady = true;
     syncReadingProgress();
 }
 
@@ -648,6 +691,8 @@ onMount(() => {
         "scroll",
         handleVisualViewportChange,
     );
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", handlePageHide);
     openPdf().catch((error) => {
         errorMessage = error instanceof Error ? error.message : "PDF 加载失败";
         loading = false;
@@ -656,7 +701,7 @@ onMount(() => {
 
 onDestroy(() => {
     if (typeof window === "undefined") return;
-    saveReadingPosition();
+    flushProgressSave();
     window.cancelAnimationFrame(resizeFrame);
     window.cancelAnimationFrame(scrollFrame);
     window.clearTimeout(outputQualityTimer);
@@ -672,6 +717,8 @@ onDestroy(() => {
         "scroll",
         handleVisualViewportChange,
     );
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+    window.removeEventListener("pagehide", handlePageHide);
     renderTasks.forEach((task) => {
         task.cancel();
     });
@@ -957,7 +1004,7 @@ function unlockPdf(): void {
                             use:registerPage={page.number}
                             data-pdf-page={page.number}
                             class="relative shrink-0 overflow-hidden bg-white shadow-[0_5px_22px_rgba(0,0,0,0.22)]"
-                            style={pageStyle(page)}
+                            style={pageStyle(page, viewerWidth)}
                             aria-label={`第 ${page.number} 页`}
                         >
                             <canvas
