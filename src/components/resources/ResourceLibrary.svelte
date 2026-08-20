@@ -89,9 +89,10 @@ async function readError(
     }
 }
 
-async function loadResources(fresh = false): Promise<void> {
-    const suffix = fresh ? `?fresh=${Date.now()}` : "";
-    const response = await fetch(`/api/resources/${suffix}`);
+async function loadResources(): Promise<void> {
+    const response = await fetch(`/api/resources/?fresh=${Date.now()}`, {
+        cache: "no-store",
+    });
     if (!response.ok) {
         throw new Error(await readError(response, "资源列表加载失败"));
     }
@@ -292,7 +293,7 @@ async function submitUpload(): Promise<void> {
             : "PDF 已上传，但首页封面生成失败";
         resetUploadForm();
         window.setTimeout(() => {
-            void loadResources(true).catch(() => undefined);
+            void loadResources().catch(() => undefined);
         }, 2500);
     } catch (error) {
         notice = error instanceof Error ? error.message : "PDF 上传失败";
@@ -457,7 +458,7 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                         on:click={() => {
                             loading = true;
                             loadError = "";
-                            loadResources(true)
+                            loadResources()
                                 .catch((error) => {
                                     loadError = error instanceof Error ? error.message : "资源列表加载失败";
                                 })

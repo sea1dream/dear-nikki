@@ -12,7 +12,7 @@ export const GET: APIRoute = async () => {
             resources: [],
         };
         return jsonResponse(response, {
-            headers: { "cache-control": "public, max-age=0, s-maxage=60" },
+            headers: { "cache-control": "no-store" },
         });
     }
 
@@ -22,10 +22,7 @@ export const GET: APIRoute = async () => {
             resources: await listResources(),
         };
         return jsonResponse(response, {
-            headers: {
-                "cache-control":
-                    "public, max-age=0, s-maxage=60, stale-while-revalidate=300",
-            },
+            headers: { "cache-control": "no-store" },
         });
     } catch (error) {
         console.error("Unable to list resource PDFs", error);
