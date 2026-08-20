@@ -1,0 +1,8 @@
+---
+import PdfViewer from "@components/resources/PdfViewer.svelte";
+import MainGridLayout from "@layouts/MainGridLayout.astro";
+---
+
+<MainGridLayout title="PDF 预览" description="在线阅读 PDF 资源">
+    <PdfViewer client:load />
+</MainGridLayout>

@@ -1,7 +1,9 @@
+import path from "node:path";
 import mdx from "@astrojs/mdx";
 import sitemap from "@astrojs/sitemap";
 import svelte from "@astrojs/svelte";
 import tailwind from "@astrojs/tailwind";
+import vercel from "@astrojs/vercel";
 import { pluginCollapsibleSections } from "@expressive-code/plugin-collapsible-sections";
 import { pluginLineNumbers } from "@expressive-code/plugin-line-numbers";
 import swup from "@swup/astro";
@@ -16,6 +18,7 @@ import remarkDirective from "remark-directive"; /* Handle directives */
 import remarkGithubAdmonitionsToDirectives from "remark-github-admonitions-to-directives";
 import remarkMath from "remark-math";
 import remarkSectionize from "remark-sectionize";
+import { viteStaticCopy } from "vite-plugin-static-copy";
 import { expressiveCodeConfig } from "./src/config.ts";
 import { pluginCopyButton } from "./src/plugins/expressive-code/copy-button.js";
 import { pluginLanguageBadge } from "./src/plugins/expressive-code/language-badge.ts";
@@ -30,12 +33,16 @@ const productionHostname = process.env.VERCEL_PROJECT_PRODUCTION_URL;
 const siteUrl = productionHostname
     ? `https://${productionHostname}`
     : "http://localhost:4321";
+const pdfJsDirectory = path
+    .resolve("node_modules/pdfjs-dist")
+    .replaceAll("\\", "/");
 
 // https://astro.build/config
 export default defineConfig({
     site: siteUrl,
     base: "/",
     trailingSlash: "always",
+    adapter: vercel(),
     integrations: [
         tailwind({
             nesting: true,
@@ -165,6 +172,32 @@ export default defineConfig({
         ],
     },
     vite: {
+        plugins: [
+            viteStaticCopy({
+                targets: [
+                    {
+                        src: `${pdfJsDirectory}/cmaps/*`,
+                        dest: "pdfjs/cmaps",
+                        rename: { stripBase: true },
+                    },
+                    {
+                        src: `${pdfJsDirectory}/standard_fonts/*`,
+                        dest: "pdfjs/standard_fonts",
+                        rename: { stripBase: true },
+                    },
+                    {
+                        src: `${pdfJsDirectory}/wasm/*`,
+                        dest: "pdfjs/wasm",
+                        rename: { stripBase: true },
+                    },
+                    {
+                        src: `${pdfJsDirectory}/iccs/*`,
+                        dest: "pdfjs/iccs",
+                        rename: { stripBase: true },
+                    },
+                ],
+            }),
+        ],
         build: {
             rollupOptions: {
                 onwarn(warning, warn) {

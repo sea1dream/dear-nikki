@@ -1,0 +1,8 @@
+---
+import ResourceLibrary from "@components/resources/ResourceLibrary.svelte";
+import MainGridLayout from "@layouts/MainGridLayout.astro";
+---
+
+<MainGridLayout title="资源" description="电子书与 PDF 资源">
+    <ResourceLibrary client:load />
+</MainGridLayout>
