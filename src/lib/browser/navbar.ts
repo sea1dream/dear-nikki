@@ -21,18 +21,6 @@ export function initNavbar() {
             });
 
         document
-            .getElementById("more-menu-switch")
-            ?.addEventListener("click", () => {
-                const panel = document.getElementById("more-menu-panel");
-                const icon = document.querySelector(
-                    "#more-menu-group .rotate-icon",
-                );
-
-                panel?.classList.toggle("float-panel-closed");
-                icon?.classList.toggle("open");
-            });
-
-        document
             .getElementById("nav-menu-switch")
             ?.addEventListener("click", () => {
                 document

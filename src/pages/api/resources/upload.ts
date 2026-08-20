@@ -1,12 +1,12 @@
 import { type HandleUploadBody, handleUpload } from "@vercel/blob/client";
 import type { APIRoute } from "astro";
+import { MAX_PDF_SIZE, UPLOAD_TOKEN_TTL } from "@/constants/resources";
 import { getOwnerSession } from "@/lib/server/auth";
 import { isSameOrigin, jsonResponse } from "@/lib/server/http";
 import {
     bookPathname,
     deleteUploadedBlob,
     isBlobConfigured,
-    MAX_PDF_SIZE,
     parseUploadPayload,
     saveResourceMetadata,
     verifyPdfBlob,
@@ -55,7 +55,7 @@ export const POST: APIRoute = async ({ cookies, request }) => {
                 return {
                     allowedContentTypes: ["application/pdf"],
                     maximumSizeInBytes: MAX_PDF_SIZE,
-                    validUntil: Date.now() + 15 * 60 * 1000,
+                    validUntil: Date.now() + UPLOAD_TOKEN_TTL,
                     addRandomSuffix: false,
                     allowOverwrite: false,
                     cacheControlMaxAge: 365 * 24 * 60 * 60,

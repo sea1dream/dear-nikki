@@ -23,6 +23,7 @@ interface Props {
     lang?: string;
     setOGTypeArticle?: boolean;
     headings?: MarkdownHeading[];
+    reader?: boolean;
 }
 
 const {
@@ -32,6 +33,7 @@ const {
     lang,
     setOGTypeArticle,
     headings = [],
+    reader = false,
 } = Astro.props;
 const hasBannerCredit =
     siteConfig.banner.enable && siteConfig.banner.credit.enable;
@@ -102,12 +104,19 @@ const bannerOffset =
     >
         <!-- The pointer-events-none here prevent blocking the click event of the TOC -->
         <div
-            class="relative max-w-[var(--page-width)] mx-auto pointer-events-auto"
+            class:list={[
+                "relative mx-auto pointer-events-auto",
+                reader ? "max-w-[100rem]" : "max-w-[var(--page-width)]",
+            ]}
         >
             <div
                 id="main-grid"
-                class="transition duration-700 w-full left-0 right-0 grid grid-cols-[17.5rem_auto] grid-rows-[auto_1fr_auto] lg:grid-rows-[auto]
-    mx-auto gap-4 px-0 md:px-4"
+                class:list={[
+                    "transition duration-700 w-full left-0 right-0 grid mx-auto gap-4 px-0 md:px-4",
+                    reader
+                        ? "grid-cols-1 grid-rows-[auto_auto]"
+                        : "grid-cols-[17.5rem_auto] grid-rows-[auto_1fr_auto] lg:grid-rows-[auto]",
+                ]}
             >
                 <!-- Banner image credit -->
                 {
@@ -148,14 +157,23 @@ const bannerOffset =
                     )
                 }
 
-                <SideBar
-                    class="mb-4 row-start-2 row-end-3 col-span-2 lg:row-start-1 lg:row-end-2 lg:col-span-1 lg:max-w-[17.5rem] onload-animation"
-                    headings={headings}
-                />
+                {
+                    !reader && (
+                        <SideBar
+                            class="mb-4 row-start-2 row-end-3 col-span-2 lg:row-start-1 lg:row-end-2 lg:col-span-1 lg:max-w-[17.5rem] onload-animation"
+                            headings={headings}
+                        />
+                    )
+                }
 
                 <main
                     id="swup-container"
-                    class="transition-swup-fade col-span-2 lg:col-span-1 overflow-hidden"
+                    class:list={[
+                        "transition-swup-fade",
+                        reader
+                            ? "col-span-1 overflow-visible"
+                            : "col-span-2 overflow-hidden lg:col-span-1",
+                    ]}
                 >
                     <div id="content-wrapper" class="onload-animation">
                         <!-- the overflow-hidden here prevent long text break the layout-->
@@ -169,7 +187,12 @@ const bannerOffset =
                     </div>
                 </main>
 
-                <div class="footer col-span-2 onload-animation block lg:hidden">
+                <div
+                    class:list={[
+                        "footer onload-animation block lg:hidden",
+                        reader ? "col-span-1" : "col-span-2",
+                    ]}
+                >
                     <Footer />
                 </div>
             </div>

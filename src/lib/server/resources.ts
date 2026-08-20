@@ -5,8 +5,6 @@ import type {
     ResourceUploadPayload,
 } from "@/types/resources";
 
-export const MAX_PDF_SIZE = 500 * 1024 * 1024;
-export const MULTIPART_UPLOAD_THRESHOLD = 100 * 1024 * 1024;
 export const RESOURCE_BOOK_PREFIX = "resources/books/";
 export const RESOURCE_METADATA_PREFIX = "resources/meta/";
 

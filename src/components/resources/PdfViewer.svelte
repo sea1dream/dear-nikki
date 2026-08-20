@@ -3,40 +3,83 @@ import Icon from "@iconify/svelte";
 import type {
     PDFDocumentLoadingTask,
     PDFDocumentProxy,
+    PDFPageProxy,
     RenderTask,
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { onDestroy, onMount, tick } from "svelte";
 import type { ResourceItem, ResourceListResponse } from "@/types/resources";
 
+type PageStatus = "idle" | "rendering" | "rendered" | "error";
+
+interface PageState {
+    number: number;
+    baseWidth: number;
+    baseHeight: number;
+    status: PageStatus;
+    renderedKey: string;
+    error: string;
+}
+
+interface ReadingPosition {
+    version: 1;
+    page: number;
+    offset: number;
+}
+
+const MAX_FIT_WIDTH = 1100;
+const MIN_SCALE = 0.25;
+const MAX_SCALE = 3;
+const PAGE_RENDER_MARGIN = "1600px 0px";
+const PROGRESS_SAVE_DELAY = 350;
+
 let resource: ResourceItem | null = null;
 let pdfDocument: PDFDocumentProxy | null = null;
 let loadingTask: PDFDocumentLoadingTask | null = null;
-let renderTask: RenderTask | null = null;
-let canvas: HTMLCanvasElement;
+let readerShell: HTMLElement;
 let viewerStage: HTMLDivElement;
 let resizeObserver: ResizeObserver | null = null;
+let renderObserver: IntersectionObserver | null = null;
 let resizeFrame = 0;
-let renderSequence = 0;
+let scrollFrame = 0;
+let viewRefreshSequence = 0;
+let progressSaveTimer = 0;
+let resumeNoticeTimer = 0;
+let viewRefreshing = false;
 let loading = true;
-let rendering = false;
 let loadProgress = 0;
 let errorMessage = "";
 let pageNumber = 1;
 let pageCount = 0;
 let pageField = "1";
+let pages: PageState[] = [];
+let viewerWidth = 900;
 let zoom = 1;
 let actualScale = 1;
 let fitWidth = true;
 let rotation = 0;
+let readingPercent = 0;
+let resumeNotice = "";
 let passwordOpen = false;
 let passwordIncorrect = false;
 let passwordValue = "";
 let submitPassword: ((password: string) => void) | null = null;
 
+const pageElements = new Map<number, HTMLElement>();
+const canvasElements = new Map<number, HTMLCanvasElement>();
+const nearPages = new Set<number>();
+const renderTasks = new Map<number, RenderTask>();
+const renderVersions = new Map<number, number>();
+
+$: actualScale = pages[0] ? getPageScale(pages[0]) : 1;
+
+function clamp(value: number, minimum: number, maximum: number): number {
+    return Math.min(Math.max(value, minimum), maximum);
+}
+
 function formatBytes(bytes: number): string {
     if (!Number.isFinite(bytes) || bytes < 1) return "0 B";
-    const units = ["B", "KB", "MB", "GB"];
+    const units = ["B", "KB", "MB", "GB", "TB"];
     const index = Math.min(
         Math.floor(Math.log(bytes) / Math.log(1024)),
         units.length - 1,
@@ -57,78 +100,407 @@ async function fetchResource(): Promise<ResourceItem> {
     return item;
 }
 
+function rotatedDimensions(page: PageState): [number, number] {
+    return rotation % 180 === 0
+        ? [page.baseWidth, page.baseHeight]
+        : [page.baseHeight, page.baseWidth];
+}
+
+function availablePageWidth(): number {
+    const gutter = viewerWidth < 640 ? 16 : 48;
+    return Math.min(Math.max(viewerWidth - gutter, 240), MAX_FIT_WIDTH);
+}
+
+function getPageScale(page: PageState): number {
+    if (!fitWidth) return zoom;
+    const [width] = rotatedDimensions(page);
+    return clamp(availablePageWidth() / width, MIN_SCALE, MAX_SCALE);
+}
+
+function pageStyle(page: PageState): string {
+    const [baseWidth, baseHeight] = rotatedDimensions(page);
+    const scale = getPageScale(page);
+    return `width:${Math.max(Math.round(baseWidth * scale), 1)}px;height:${Math.max(Math.round(baseHeight * scale), 1)}px`;
+}
+
+function renderKey(page: PageState): string {
+    return `${rotation}:${getPageScale(page).toFixed(4)}`;
+}
+
+function markPage(
+    pageNumberToUpdate: number,
+    values: Partial<PageState>,
+): void {
+    const page = pages[pageNumberToUpdate - 1];
+    if (!page) return;
+    Object.assign(page, values);
+    pages = [...pages];
+}
+
+function registerPage(node: HTMLElement, number: number) {
+    pageElements.set(number, node);
+    renderObserver?.observe(node);
+
+    return {
+        destroy() {
+            renderObserver?.unobserve(node);
+            pageElements.delete(number);
+            nearPages.delete(number);
+        },
+    };
+}
+
+function registerCanvas(node: HTMLCanvasElement, number: number) {
+    node.width = 1;
+    node.height = 1;
+    canvasElements.set(number, node);
+    return {
+        destroy() {
+            canvasElements.delete(number);
+        },
+    };
+}
+
+function clearCanvas(number: number): void {
+    const canvas = canvasElements.get(number);
+    if (!canvas) return;
+    canvas.width = 1;
+    canvas.height = 1;
+}
+
+async function waitForTask(number: number): Promise<void> {
+    const task = renderTasks.get(number);
+    if (!task) return;
+    task.cancel();
+    try {
+        await task.promise;
+    } catch {
+        // Rendering cancellation is expected while scrolling or changing scale.
+    }
+    if (renderTasks.get(number) === task) renderTasks.delete(number);
+}
+
+function releasePage(number: number): void {
+    const page = pages[number - 1];
+    if (!page || page.status === "idle") return;
+
+    renderVersions.set(number, (renderVersions.get(number) ?? 0) + 1);
+    markPage(number, { status: "idle", renderedKey: "", error: "" });
+    void waitForTask(number).then(() => {
+        if (!nearPages.has(number)) clearCanvas(number);
+    });
+}
+
+function updatePageDimensions(page: PageState, pdfPage: PDFPageProxy): void {
+    const viewport = pdfPage.getViewport({ scale: 1, rotation: 0 });
+    if (
+        Math.abs(page.baseWidth - viewport.width) < 0.5 &&
+        Math.abs(page.baseHeight - viewport.height) < 0.5
+    ) {
+        return;
+    }
+    page.baseWidth = viewport.width;
+    page.baseHeight = viewport.height;
+    pages = [...pages];
+}
+
+async function renderPage(number: number): Promise<void> {
+    const pageState = pages[number - 1];
+    const canvas = canvasElements.get(number);
+    if (
+        !pdfDocument ||
+        !pageState ||
+        !canvas ||
+        !nearPages.has(number) ||
+        viewRefreshing
+    ) {
+        return;
+    }
+
+    await waitForTask(number);
+    if (!nearPages.has(number) || viewRefreshing) return;
+
+    const pdfPage = await pdfDocument.getPage(number);
+    updatePageDimensions(pageState, pdfPage);
+    const key = renderKey(pageState);
+    if (pageState.status === "rendered" && pageState.renderedKey === key) {
+        return;
+    }
+
+    const version = (renderVersions.get(number) ?? 0) + 1;
+    renderVersions.set(number, version);
+    markPage(number, {
+        status: "rendering",
+        renderedKey: key,
+        error: "",
+    });
+
+    try {
+        const viewport = pdfPage.getViewport({
+            scale: getPageScale(pageState),
+            rotation,
+        });
+        const deviceScale = Math.min(window.devicePixelRatio || 1, 2);
+        const maximumPixels = 18_000_000;
+        const pixelScale = clamp(
+            Math.min(
+                deviceScale,
+                Math.sqrt(maximumPixels / (viewport.width * viewport.height)),
+            ),
+            0.6,
+            2,
+        );
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) throw new Error("浏览器无法创建 PDF 画布");
+
+        canvas.width = Math.max(Math.floor(viewport.width * pixelScale), 1);
+        canvas.height = Math.max(Math.floor(viewport.height * pixelScale), 1);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+        const task = pdfPage.render({
+            canvas: null,
+            canvasContext: context,
+            viewport,
+            transform:
+                pixelScale === 1
+                    ? undefined
+                    : [pixelScale, 0, 0, pixelScale, 0, 0],
+            background: "rgb(255, 255, 255)",
+        });
+        renderTasks.set(number, task);
+        await task.promise;
+
+        if (renderVersions.get(number) === version && nearPages.has(number)) {
+            markPage(number, { status: "rendered", renderedKey: key });
+        }
+    } catch (error) {
+        if (
+            renderVersions.get(number) === version &&
+            (!(error instanceof Error) ||
+                error.name !== "RenderingCancelledException")
+        ) {
+            markPage(number, {
+                status: "error",
+                error:
+                    error instanceof Error ? error.message : "PDF 页面渲染失败",
+            });
+        }
+    } finally {
+        const task = renderTasks.get(number);
+        if (task && renderVersions.get(number) === version) {
+            renderTasks.delete(number);
+        }
+    }
+}
+
+function setupRenderObserver(): void {
+    renderObserver?.disconnect();
+    if (!viewerStage) return;
+
+    renderObserver = new IntersectionObserver(
+        (entries) => {
+            for (const entry of entries) {
+                const number = Number(
+                    (entry.target as HTMLElement).dataset.pdfPage,
+                );
+                if (!number) continue;
+                if (entry.isIntersecting) {
+                    nearPages.add(number);
+                    void renderPage(number);
+                } else {
+                    nearPages.delete(number);
+                    releasePage(number);
+                }
+            }
+        },
+        { root: viewerStage, rootMargin: PAGE_RENDER_MARGIN },
+    );
+
+    pageElements.forEach((element) => {
+        renderObserver?.observe(element);
+    });
+}
+
+function findCurrentPage(): number {
+    if (!viewerStage || pageElements.size === 0) return pageNumber;
+    const stageRect = viewerStage.getBoundingClientRect();
+    const readingLine =
+        stageRect.top + Math.min(96, viewerStage.clientHeight * 0.18);
+    let low = 1;
+    let high = pageCount;
+
+    while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        const element = pageElements.get(middle);
+        if (!element) break;
+        const rect = element.getBoundingClientRect();
+        if (readingLine < rect.top) {
+            high = middle - 1;
+        } else if (readingLine >= rect.bottom) {
+            low = middle + 1;
+        } else {
+            return middle;
+        }
+    }
+
+    return clamp(low, 1, pageCount);
+}
+
+function captureReadingPosition(number = pageNumber): ReadingPosition {
+    const element = pageElements.get(number);
+    if (!viewerStage || !element) {
+        return { version: 1, page: number, offset: 0 };
+    }
+    const stageRect = viewerStage.getBoundingClientRect();
+    const pageRect = element.getBoundingClientRect();
+    return {
+        version: 1,
+        page: number,
+        offset: clamp(
+            (stageRect.top - pageRect.top) / Math.max(pageRect.height, 1),
+            0,
+            0.999,
+        ),
+    };
+}
+
+function progressStorageKey(): string | null {
+    return resource ? `pdf-reading-progress:${resource.id}` : null;
+}
+
+function saveReadingPosition(): void {
+    const key = progressStorageKey();
+    if (!key || !pageCount) return;
+    try {
+        localStorage.setItem(
+            key,
+            JSON.stringify(captureReadingPosition(findCurrentPage())),
+        );
+    } catch {
+        // Reading still works when browser storage is unavailable.
+    }
+}
+
+function scheduleProgressSave(): void {
+    window.clearTimeout(progressSaveTimer);
+    progressSaveTimer = window.setTimeout(
+        saveReadingPosition,
+        PROGRESS_SAVE_DELAY,
+    );
+}
+
+function readStoredPosition(): ReadingPosition | null {
+    const key = progressStorageKey();
+    if (!key) return null;
+    try {
+        const parsed = JSON.parse(
+            localStorage.getItem(key) ?? "null",
+        ) as Partial<ReadingPosition> | null;
+        if (
+            parsed?.version !== 1 ||
+            typeof parsed.page !== "number" ||
+            typeof parsed.offset !== "number"
+        ) {
+            return null;
+        }
+        return {
+            version: 1,
+            page: clamp(Math.round(parsed.page), 1, pageCount),
+            offset: clamp(parsed.offset, 0, 0.999),
+        };
+    } catch {
+        return null;
+    }
+}
+
+function scrollToPosition(position: ReadingPosition, smooth = false): void {
+    const element = pageElements.get(position.page);
+    if (!viewerStage || !element) return;
+    const stageRect = viewerStage.getBoundingClientRect();
+    const pageRect = element.getBoundingClientRect();
+    const top =
+        viewerStage.scrollTop +
+        pageRect.top -
+        stageRect.top +
+        position.offset * pageRect.height;
+    const reduceMotion = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+    ).matches;
+    viewerStage.scrollTo({
+        top,
+        behavior: smooth && !reduceMotion ? "smooth" : "auto",
+    });
+    pageNumber = position.page;
+    pageField = String(position.page);
+}
+
+function syncReadingProgress(): void {
+    if (!viewerStage || !pageCount) return;
+    const current = findCurrentPage();
+    pageNumber = current;
+    if (
+        !(document.activeElement instanceof HTMLInputElement) ||
+        document.activeElement.name !== "pdf-page"
+    ) {
+        pageField = String(current);
+    }
+    const scrollable = viewerStage.scrollHeight - viewerStage.clientHeight;
+    readingPercent =
+        scrollable > 0
+            ? Math.round((viewerStage.scrollTop / scrollable) * 100)
+            : 0;
+    scheduleProgressSave();
+}
+
+function handleViewerScroll(): void {
+    if (scrollFrame) return;
+    scrollFrame = window.requestAnimationFrame(() => {
+        scrollFrame = 0;
+        syncReadingProgress();
+    });
+}
+
+async function refreshRenderedPages(
+    anchor: ReadingPosition = captureReadingPosition(),
+): Promise<void> {
+    const sequence = ++viewRefreshSequence;
+    viewRefreshing = true;
+    renderVersions.forEach((version, number) => {
+        renderVersions.set(number, version + 1);
+    });
+
+    await Promise.all([...renderTasks.keys()].map(waitForTask));
+    if (sequence !== viewRefreshSequence) return;
+
+    for (const page of pages) {
+        page.status = "idle";
+        page.renderedKey = "";
+        page.error = "";
+        clearCanvas(page.number);
+    }
+    pages = [...pages];
+    await tick();
+    scrollToPosition(anchor);
+    viewRefreshing = false;
+    nearPages.forEach((number) => void renderPage(number));
+}
+
 function setupResizeObserver(): void {
     resizeObserver?.disconnect();
     if (!viewerStage) return;
 
     resizeObserver = new ResizeObserver(() => {
-        if (!fitWidth || !pdfDocument) return;
+        const nextWidth = Math.round(viewerStage.clientWidth);
+        if (!nextWidth || nextWidth === viewerWidth) return;
+        const anchor = captureReadingPosition();
         window.cancelAnimationFrame(resizeFrame);
-        resizeFrame = window.requestAnimationFrame(() => void renderPage());
+        resizeFrame = window.requestAnimationFrame(() => {
+            viewerWidth = nextWidth;
+            if (fitWidth) void refreshRenderedPages(anchor);
+        });
     });
     resizeObserver.observe(viewerStage);
-}
-
-async function renderPage(): Promise<void> {
-    if (!pdfDocument || !canvas || !viewerStage) return;
-
-    const sequence = ++renderSequence;
-    const previousTask = renderTask;
-    previousTask?.cancel();
-    if (previousTask) {
-        try {
-            await previousTask.promise;
-        } catch {
-            // Cancellation is expected when paging or resizing quickly.
-        }
-    }
-    if (sequence !== renderSequence) return;
-
-    rendering = true;
-    try {
-        const page = await pdfDocument.getPage(pageNumber);
-        if (sequence !== renderSequence) return;
-
-        const baseViewport = page.getViewport({ scale: 1, rotation });
-        const availableWidth = Math.max(viewerStage.clientWidth - 32, 240);
-        const renderScale = fitWidth
-            ? Math.min(Math.max(availableWidth / baseViewport.width, 0.25), 3)
-            : zoom;
-        actualScale = renderScale;
-
-        const viewport = page.getViewport({ scale: renderScale, rotation });
-        const outputScale = Math.min(window.devicePixelRatio || 1, 2);
-        const context = canvas.getContext("2d", { alpha: false });
-        if (!context) throw new Error("浏览器无法创建 PDF 画布");
-
-        canvas.width = Math.floor(viewport.width * outputScale);
-        canvas.height = Math.floor(viewport.height * outputScale);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
-
-        const currentTask = page.render({
-            canvas: null,
-            canvasContext: context,
-            viewport,
-            transform:
-                outputScale === 1
-                    ? undefined
-                    : [outputScale, 0, 0, outputScale, 0, 0],
-            background: "rgb(255, 255, 255)",
-        });
-        renderTask = currentTask;
-        await currentTask.promise;
-    } catch (error) {
-        if (
-            !(error instanceof Error) ||
-            error.name !== "RenderingCancelledException"
-        ) {
-            errorMessage =
-                error instanceof Error ? error.message : "PDF 页面渲染失败";
-        }
-    } finally {
-        if (sequence === renderSequence) rendering = false;
-    }
 }
 
 async function openPdf(): Promise<void> {
@@ -157,13 +529,38 @@ async function openPdf(): Promise<void> {
 
     pdfDocument = await loadingTask.promise;
     pageCount = pdfDocument.numPages;
+    const firstPage = await pdfDocument.getPage(1);
+    const firstViewport = firstPage.getViewport({ scale: 1, rotation: 0 });
+    pages = Array.from({ length: pageCount }, (_, index) => ({
+        number: index + 1,
+        baseWidth: firstViewport.width,
+        baseHeight: firstViewport.height,
+        status: "idle",
+        renderedKey: "",
+        error: "",
+    }));
     pageNumber = 1;
     pageField = "1";
     passwordOpen = false;
     loading = false;
+
     await tick();
+    viewerWidth = Math.round(viewerStage.clientWidth) || viewerWidth;
+    setupRenderObserver();
     setupResizeObserver();
-    await renderPage();
+    await tick();
+
+    const storedPosition = readStoredPosition();
+    if (storedPosition) {
+        scrollToPosition(storedPosition);
+        if (storedPosition.page > 1 || storedPosition.offset > 0.02) {
+            resumeNotice = `已继续上次阅读 · 第 ${storedPosition.page} 页`;
+            resumeNoticeTimer = window.setTimeout(() => {
+                resumeNotice = "";
+            }, 2800);
+        }
+    }
+    syncReadingProgress();
 }
 
 onMount(() => {
@@ -174,11 +571,17 @@ onMount(() => {
 });
 
 onDestroy(() => {
-    if (typeof window !== "undefined") {
-        window.cancelAnimationFrame(resizeFrame);
-    }
+    if (typeof window === "undefined") return;
+    saveReadingPosition();
+    window.cancelAnimationFrame(resizeFrame);
+    window.cancelAnimationFrame(scrollFrame);
+    window.clearTimeout(progressSaveTimer);
+    window.clearTimeout(resumeNoticeTimer);
     resizeObserver?.disconnect();
-    renderTask?.cancel();
+    renderObserver?.disconnect();
+    renderTasks.forEach((task) => {
+        task.cancel();
+    });
     if (loadingTask) {
         void loadingTask.destroy();
     } else if (pdfDocument) {
@@ -187,14 +590,16 @@ onDestroy(() => {
 });
 
 function changePage(nextPage: number): void {
-    const boundedPage = Math.min(Math.max(Math.round(nextPage), 1), pageCount);
-    if (!Number.isFinite(boundedPage) || boundedPage === pageNumber) {
+    if (!Number.isFinite(nextPage) || !pageCount) {
         pageField = String(pageNumber);
         return;
     }
-    pageNumber = boundedPage;
-    pageField = String(pageNumber);
-    void renderPage();
+    const boundedPage = clamp(Math.round(nextPage), 1, pageCount);
+    const nearby = Math.abs(boundedPage - pageNumber) <= 3;
+    scrollToPosition({ version: 1, page: boundedPage, offset: 0 }, nearby);
+    if (!nearby) {
+        window.requestAnimationFrame(syncReadingProgress);
+    }
 }
 
 function applyPageField(): void {
@@ -202,27 +607,31 @@ function applyPageField(): void {
 }
 
 function adjustZoom(delta: number): void {
-    zoom = Math.min(Math.max((fitWidth ? actualScale : zoom) + delta, 0.25), 3);
+    const anchor = captureReadingPosition();
+    zoom = clamp((fitWidth ? actualScale : zoom) + delta, MIN_SCALE, MAX_SCALE);
     fitWidth = false;
-    void renderPage();
+    void refreshRenderedPages(anchor);
 }
 
 function useFitWidth(): void {
+    if (fitWidth) return;
+    const anchor = captureReadingPosition();
     fitWidth = true;
-    void renderPage();
+    void refreshRenderedPages(anchor);
 }
 
-function rotatePage(): void {
+function rotatePages(): void {
+    const anchor = captureReadingPosition();
     rotation = (rotation + 90) % 360;
-    void renderPage();
+    void refreshRenderedPages(anchor);
 }
 
 async function toggleFullscreen(): Promise<void> {
-    if (!viewerStage) return;
+    if (!readerShell) return;
     if (document.fullscreenElement) {
         await document.exitFullscreen();
     } else {
-        await viewerStage.requestFullscreen();
+        await readerShell.requestFullscreen();
     }
 }
 
@@ -238,9 +647,12 @@ function unlockPdf(): void {
 }
 </script>
 
-<section class="overflow-hidden rounded-[var(--radius-large)]">
-    <div class="card-base overflow-hidden">
-        <header class="flex min-h-20 items-center gap-3 border-b border-black/5 px-4 py-4 dark:border-white/10 md:px-6">
+<section
+    bind:this={readerShell}
+    class="pdf-reader-shell relative overflow-hidden rounded-lg"
+>
+    <div class="card-base flex h-full flex-col overflow-hidden rounded-lg">
+        <header class="flex min-h-16 items-center gap-3 border-b border-black/5 px-3 py-3 dark:border-white/10 md:px-5">
             <a
                 href="/resources/"
                 class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--btn-regular-bg)] text-75 no-underline transition hover:text-[var(--primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
@@ -272,7 +684,7 @@ function unlockPdf(): void {
         </header>
 
         {#if loading}
-            <div class="flex min-h-[34rem] flex-col items-center justify-center px-5 text-center" aria-live="polite">
+            <div class="flex min-h-[38rem] flex-col items-center justify-center px-5 text-center" aria-live="polite">
                 <Icon icon="material-symbols:progress-activity" width="32" class="animate-spin text-[var(--primary)]" />
                 <p class="mt-4 text-sm font-medium text-75">正在打开 PDF</p>
                 {#if loadProgress > 0 && loadProgress < 100}
@@ -286,7 +698,7 @@ function unlockPdf(): void {
                 {/if}
             </div>
         {:else if passwordOpen}
-            <div class="flex min-h-[34rem] items-center justify-center px-5">
+            <div class="flex min-h-[38rem] items-center justify-center px-5">
                 <form class="w-full max-w-sm text-center" on:submit|preventDefault={unlockPdf}>
                     <Icon icon="material-symbols:lock-rounded" width="34" class="mx-auto text-[var(--primary)]" />
                     <h2 class="mt-4 text-lg font-bold text-90">此 PDF 需要密码</h2>
@@ -312,7 +724,7 @@ function unlockPdf(): void {
                 </form>
             </div>
         {:else if errorMessage}
-            <div class="flex min-h-[34rem] flex-col items-center justify-center px-5 text-center">
+            <div class="flex min-h-[38rem] flex-col items-center justify-center px-5 text-center">
                 <Icon icon="material-symbols:error-outline-rounded" width="34" class="text-red-500" />
                 <h2 class="mt-4 text-lg font-bold text-90">无法打开 PDF</h2>
                 <p class="mt-2 max-w-md text-sm leading-6 text-50">{errorMessage}</p>
@@ -334,7 +746,7 @@ function unlockPdf(): void {
                 </div>
             </div>
         {:else}
-            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-black/5 bg-[var(--btn-regular-bg)]/45 px-3 py-2 dark:border-white/10 md:px-4">
+            <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-black/5 bg-[var(--btn-regular-bg)]/45 px-2 py-2 dark:border-white/10 md:px-4">
                 <div class="flex h-9 items-center gap-1">
                     <button
                         type="button"
@@ -371,6 +783,10 @@ function unlockPdf(): void {
                     </button>
                 </div>
 
+                <span class="hidden text-xs font-semibold tabular-nums text-50 sm:block">
+                    {readingPercent}%
+                </span>
+
                 <div class="flex h-9 items-center gap-1">
                     <button
                         type="button"
@@ -381,7 +797,7 @@ function unlockPdf(): void {
                     >
                         <Icon icon="material-symbols:zoom-out-rounded" width="20" />
                     </button>
-                    <span class="w-12 text-center text-xs font-semibold tabular-nums text-50">
+                    <span class="hidden w-12 text-center text-xs font-semibold tabular-nums text-50 sm:block">
                         {Math.round(actualScale * 100)}%
                     </span>
                     <button
@@ -405,7 +821,7 @@ function unlockPdf(): void {
                     <button
                         type="button"
                         class="flex h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
-                        on:click={rotatePage}
+                        on:click={rotatePages}
                         aria-label="顺时针旋转"
                         title="顺时针旋转"
                     >
@@ -413,7 +829,7 @@ function unlockPdf(): void {
                     </button>
                     <button
                         type="button"
-                        class="hidden h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:flex"
+                        class="flex h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
                         on:click={toggleFullscreen}
                         aria-label="全屏阅读"
                         title="全屏阅读"
@@ -422,22 +838,87 @@ function unlockPdf(): void {
                     </button>
                 </div>
             </div>
+            <div class="h-1 shrink-0 bg-[var(--btn-regular-bg)]" aria-hidden="true">
+                <div
+                    class="h-full bg-[var(--primary)] transition-[width] duration-150"
+                    style={`width:${readingPercent}%`}
+                ></div>
+            </div>
 
             <div
                 bind:this={viewerStage}
-                class="relative flex h-[min(72vh,58rem)] min-h-[30rem] items-start justify-center overflow-auto bg-[#d9dde3] p-4 dark:bg-[#22262c] fullscreen:h-screen fullscreen:max-h-none"
+                class="pdf-viewer-stage relative h-[calc(100dvh-8rem)] min-h-[30rem] overflow-auto bg-[#d9dde3] overscroll-contain dark:bg-[#22262c] md:h-[82dvh] md:min-h-[36rem] md:max-h-[72rem]"
+                data-lenis-prevent
+                role="region"
+                aria-label="PDF 连续阅读区"
+                on:scroll={handleViewerScroll}
             >
-                {#if rendering}
-                    <div class="pointer-events-none absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-lg bg-black/60 text-white" aria-label="正在渲染页面">
-                        <Icon icon="material-symbols:progress-activity" width="18" class="animate-spin" />
-                    </div>
-                {/if}
-                <canvas
-                    bind:this={canvas}
-                    class="block max-w-none bg-white shadow-[0_6px_24px_rgba(0,0,0,0.24)]"
-                    aria-label={`PDF 第 ${pageNumber} 页`}
-                ></canvas>
+                <div
+                    class="relative flex w-max min-w-full flex-col items-center gap-4 px-2 py-5 md:gap-5 md:px-6"
+                    role="document"
+                    aria-label={resource?.title || "PDF 文档"}
+                >
+                    {#each pages as page (page.number)}
+                        <article
+                            use:registerPage={page.number}
+                            data-pdf-page={page.number}
+                            class="relative shrink-0 overflow-hidden bg-white shadow-[0_5px_22px_rgba(0,0,0,0.22)]"
+                            style={pageStyle(page)}
+                            aria-label={`第 ${page.number} 页`}
+                        >
+                            <canvas
+                                use:registerCanvas={page.number}
+                                class="block h-full w-full bg-white"
+                                aria-label={`PDF 第 ${page.number} 页`}
+                            ></canvas>
+                            {#if page.status === "idle" || page.status === "rendering"}
+                                <div class="pointer-events-none absolute inset-0 flex items-center justify-center bg-white text-neutral-400">
+                                    {#if page.status === "rendering"}
+                                        <Icon icon="material-symbols:progress-activity" width="24" class="animate-spin" />
+                                    {:else}
+                                        <span class="text-sm font-medium tabular-nums">{page.number}</span>
+                                    {/if}
+                                </div>
+                            {:else if page.status === "error"}
+                                <div class="absolute inset-0 flex flex-col items-center justify-center bg-white px-4 text-center text-neutral-500">
+                                    <Icon icon="material-symbols:error-outline-rounded" width="28" />
+                                    <span class="mt-2 text-sm">第 {page.number} 页加载失败</span>
+                                    <button
+                                        type="button"
+                                        class="mt-3 h-9 rounded-lg bg-neutral-100 px-3 text-xs font-semibold text-neutral-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                                        on:click={() => {
+                                            markPage(page.number, { status: "idle", error: "" });
+                                            void renderPage(page.number);
+                                        }}
+                                    >
+                                        重试
+                                    </button>
+                                </div>
+                            {/if}
+                        </article>
+                    {/each}
+                </div>
             </div>
         {/if}
     </div>
+
+    {#if resumeNotice}
+        <div class="pointer-events-none absolute bottom-4 right-4 z-20 rounded-lg bg-black/75 px-3 py-2 text-xs font-medium text-white shadow-lg" aria-live="polite">
+            {resumeNotice}
+        </div>
+    {/if}
 </section>
+
+<style>
+    :global(.pdf-reader-shell:fullscreen) {
+        height: 100dvh;
+        border-radius: 0;
+        background: var(--page-bg);
+    }
+
+    :global(.pdf-reader-shell:fullscreen .pdf-viewer-stage) {
+        height: calc(100dvh - 7.75rem);
+        min-height: 0;
+        max-height: none;
+    }
+</style>

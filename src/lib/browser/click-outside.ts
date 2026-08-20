@@ -49,18 +49,4 @@ export function initClickOutsideHandlers() {
         "search-bar",
         "search-switch",
     ]);
-
-    setClickOutsideToClose(
-        "more-menu-panel",
-        ["more-menu-panel", "more-menu-switch"],
-        () => {
-            const icon = document.querySelector(
-                "#more-menu-group .rotate-icon",
-            );
-            // SVG is not HTMLElement, hence check Element instead.
-            if (icon instanceof Element) {
-                icon.classList.remove("open");
-            }
-        },
-    );
 }

@@ -2,15 +2,17 @@
 import Icon from "@iconify/svelte";
 import { upload } from "@vercel/blob/client";
 import { onMount, tick } from "svelte";
+import {
+    MAX_PDF_SIZE,
+    MAX_PDF_SIZE_LABEL,
+    MULTIPART_UPLOAD_THRESHOLD,
+} from "@/constants/resources";
 import type {
     ResourceAuthResponse,
     ResourceItem,
     ResourceListResponse,
     ResourceUploadPayload,
 } from "@/types/resources";
-
-const MAX_PDF_SIZE = 500 * 1024 * 1024;
-const MULTIPART_THRESHOLD = 100 * 1024 * 1024;
 
 let resources: ResourceItem[] = [];
 let auth: ResourceAuthResponse = {
@@ -188,7 +190,7 @@ async function submitUpload(): Promise<void> {
         return;
     }
     if (file.size > MAX_PDF_SIZE) {
-        notice = "PDF 不能超过 500 MB";
+        notice = `PDF 不能超过 ${MAX_PDF_SIZE_LABEL}`;
         return;
     }
 
@@ -209,7 +211,7 @@ async function submitUpload(): Promise<void> {
             handleUploadUrl: "/api/resources/upload/",
             clientPayload: JSON.stringify(payload),
             contentType: "application/pdf",
-            multipart: file.size >= MULTIPART_THRESHOLD,
+            multipart: file.size >= MULTIPART_UPLOAD_THRESHOLD,
             onUploadProgress: ({ percentage }) => {
                 uploadProgress = Math.round(percentage);
             },
@@ -509,7 +511,7 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                         on:change={handleFileChange}
                         class="block w-full rounded-lg border border-black/10 bg-[var(--btn-regular-bg)] p-2 text-sm text-75 file:mr-3 file:rounded-md file:border-0 file:bg-[var(--primary)] file:px-3 file:py-2 file:font-semibold file:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] dark:border-white/10"
                     />
-                    <span class="mt-1 block text-xs text-30">最大 500 MB</span>
+                    <span class="mt-1 block text-xs text-30">最大 {MAX_PDF_SIZE_LABEL}，大文件自动分片上传</span>
                 </label>
 
                 <label class="block">
