@@ -28,6 +28,7 @@ interface ReadingPosition {
 }
 
 const MAX_FIT_WIDTH = 1100;
+const MIN_FIT_SCALE = 0.1;
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 3;
 const PAGE_RENDER_MARGIN = "1600px 0px";
@@ -107,14 +108,14 @@ function rotatedDimensions(page: PageState): [number, number] {
 }
 
 function availablePageWidth(): number {
-    const gutter = viewerWidth < 640 ? 16 : 48;
-    return Math.min(Math.max(viewerWidth - gutter, 240), MAX_FIT_WIDTH);
+    const gutter = viewerWidth < 640 ? 8 : 48;
+    return Math.min(Math.max(viewerWidth - gutter, 1), MAX_FIT_WIDTH);
 }
 
 function getPageScale(page: PageState): number {
     if (!fitWidth) return zoom;
     const [width] = rotatedDimensions(page);
-    return clamp(availablePageWidth() / width, MIN_SCALE, MAX_SCALE);
+    return clamp(availablePageWidth() / width, MIN_FIT_SCALE, MAX_SCALE);
 }
 
 function pageStyle(page: PageState): string {
@@ -652,17 +653,17 @@ function unlockPdf(): void {
     class="pdf-reader-shell relative overflow-hidden rounded-lg"
 >
     <div class="card-base flex h-full flex-col overflow-hidden rounded-lg">
-        <header class="flex min-h-16 items-center gap-3 border-b border-black/5 px-3 py-3 dark:border-white/10 md:px-5">
+        <header class="flex min-h-14 items-center gap-2.5 border-b border-black/5 px-2.5 py-2 dark:border-white/10 sm:min-h-16 sm:gap-3 sm:px-5 sm:py-3">
             <a
                 href="/resources/"
-                class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--btn-regular-bg)] text-75 no-underline transition hover:text-[var(--primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--btn-regular-bg)] text-75 no-underline transition hover:text-[var(--primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-10 sm:w-10"
                 aria-label="返回资源列表"
                 title="返回资源列表"
             >
                 <Icon icon="material-symbols:arrow-back-rounded" width="22" />
             </a>
             <div class="min-w-0 flex-1">
-                <p class="truncate text-base font-bold text-90 md:text-lg" title={resource?.title || "PDF 预览"}>
+                <p class="truncate text-sm font-bold text-90 sm:text-base md:text-lg" title={resource?.title || "PDF 预览"}>
                     {resource?.title || "PDF 预览"}
                 </p>
                 {#if resource}
@@ -674,7 +675,7 @@ function unlockPdf(): void {
             {#if resource}
                 <a
                     href={resource.downloadUrl}
-                    class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--primary)] text-white no-underline transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary)] text-white no-underline transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-10 sm:w-10"
                     aria-label="下载 PDF"
                     title="下载 PDF"
                 >
@@ -746,11 +747,11 @@ function unlockPdf(): void {
                 </div>
             </div>
         {:else}
-            <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-black/5 bg-[var(--btn-regular-bg)]/45 px-2 py-2 dark:border-white/10 md:px-4">
-                <div class="flex h-9 items-center gap-1">
+            <div class="flex flex-nowrap items-center justify-between gap-1 overflow-hidden border-b border-black/5 bg-[var(--btn-regular-bg)]/45 px-1 py-1.5 dark:border-white/10 sm:px-4 sm:py-2">
+                <div class="flex h-8 shrink-0 items-center gap-0 sm:h-9 sm:gap-1">
                     <button
                         type="button"
-                        class="flex h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                        class="flex h-8 w-8 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-9 sm:w-9"
                         disabled={pageNumber <= 1}
                         on:click={() => changePage(pageNumber - 1)}
                         aria-label="上一页"
@@ -758,14 +759,14 @@ function unlockPdf(): void {
                     >
                         <Icon icon="material-symbols:chevron-left-rounded" width="22" />
                     </button>
-                    <form class="flex items-center gap-1.5 text-xs text-50" on:submit|preventDefault={applyPageField}>
+                    <form class="flex items-center gap-1 text-xs text-50 sm:gap-1.5" on:submit|preventDefault={applyPageField}>
                         <input
                             bind:value={pageField}
                             type="number"
                             name="pdf-page"
                             min="1"
                             max={pageCount}
-                            class="h-8 w-14 rounded-md border border-black/10 bg-[var(--card-bg)] px-1 text-center text-sm font-semibold text-90 outline-none focus-visible:border-[var(--primary)] focus-visible:ring-2 focus-visible:ring-[var(--primary)]/20 dark:border-white/10"
+                            class="h-8 w-10 rounded-md border border-black/10 bg-[var(--card-bg)] px-1 text-center text-sm font-semibold text-90 outline-none focus-visible:border-[var(--primary)] focus-visible:ring-2 focus-visible:ring-[var(--primary)]/20 dark:border-white/10 sm:w-14"
                             aria-label="页码"
                             on:change={applyPageField}
                         />
@@ -773,7 +774,7 @@ function unlockPdf(): void {
                     </form>
                     <button
                         type="button"
-                        class="flex h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                        class="flex h-8 w-8 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-9 sm:w-9"
                         disabled={pageNumber >= pageCount}
                         on:click={() => changePage(pageNumber + 1)}
                         aria-label="下一页"
@@ -787,10 +788,10 @@ function unlockPdf(): void {
                     {readingPercent}%
                 </span>
 
-                <div class="flex h-9 items-center gap-1">
+                <div class="flex h-8 shrink-0 items-center gap-0 sm:h-9 sm:gap-1">
                     <button
                         type="button"
-                        class="flex h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                        class="hidden h-8 w-8 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] min-[350px]:flex sm:h-9 sm:w-9"
                         on:click={() => adjustZoom(-0.15)}
                         aria-label="缩小"
                         title="缩小"
@@ -802,7 +803,7 @@ function unlockPdf(): void {
                     </span>
                     <button
                         type="button"
-                        class="flex h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                        class="flex h-8 w-8 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-9 sm:w-9"
                         on:click={() => adjustZoom(0.15)}
                         aria-label="放大"
                         title="放大"
@@ -811,7 +812,7 @@ function unlockPdf(): void {
                     </button>
                     <button
                         type="button"
-                        class={`flex h-9 w-9 items-center justify-center rounded-lg transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] ${fitWidth ? "bg-[var(--primary)] text-white" : "text-75 hover:bg-[var(--btn-regular-bg)]"}`}
+                        class={`flex h-8 w-8 items-center justify-center rounded-lg transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-9 sm:w-9 ${fitWidth ? "bg-[var(--primary)] text-white" : "text-75 hover:bg-[var(--btn-regular-bg)]"}`}
                         on:click={useFitWidth}
                         aria-label="适合宽度"
                         title="适合宽度"
@@ -820,7 +821,7 @@ function unlockPdf(): void {
                     </button>
                     <button
                         type="button"
-                        class="flex h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                        class="flex h-8 w-8 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-9 sm:w-9"
                         on:click={rotatePages}
                         aria-label="顺时针旋转"
                         title="顺时针旋转"
@@ -829,7 +830,7 @@ function unlockPdf(): void {
                     </button>
                     <button
                         type="button"
-                        class="flex h-9 w-9 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                        class="flex h-8 w-8 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-9 sm:w-9"
                         on:click={toggleFullscreen}
                         aria-label="全屏阅读"
                         title="全屏阅读"
@@ -847,14 +848,14 @@ function unlockPdf(): void {
 
             <div
                 bind:this={viewerStage}
-                class="pdf-viewer-stage relative h-[calc(100dvh-8rem)] min-h-[30rem] overflow-auto bg-[#d9dde3] overscroll-contain dark:bg-[#22262c] md:h-[82dvh] md:min-h-[36rem] md:max-h-[72rem]"
+                class="pdf-viewer-stage relative h-[calc(100dvh-6.5rem)] min-h-[28rem] overflow-auto bg-[#d9dde3] overscroll-contain dark:bg-[#22262c] md:h-[82dvh] md:min-h-[36rem] md:max-h-[72rem]"
                 data-lenis-prevent
                 role="region"
                 aria-label="PDF 连续阅读区"
                 on:scroll={handleViewerScroll}
             >
                 <div
-                    class="relative flex w-max min-w-full flex-col items-center gap-4 px-2 py-5 md:gap-5 md:px-6"
+                    class="relative flex w-max min-w-full flex-col items-center gap-4 px-1 py-4 md:gap-5 md:px-6 md:py-5"
                     role="document"
                     aria-label={resource?.title || "PDF 文档"}
                 >
@@ -917,8 +918,30 @@ function unlockPdf(): void {
     }
 
     :global(.pdf-reader-shell:fullscreen .pdf-viewer-stage) {
-        height: calc(100dvh - 7.75rem);
+        height: calc(100dvh - 6.5rem);
         min-height: 0;
         max-height: none;
+    }
+
+    :global(.pdf-viewer-stage) {
+        scrollbar-color: color-mix(in srgb, var(--primary) 55%, transparent)
+            transparent;
+        scrollbar-width: thin;
+    }
+
+    :global(.pdf-viewer-stage::-webkit-scrollbar) {
+        width: 6px;
+        height: 6px;
+    }
+
+    :global(.pdf-viewer-stage::-webkit-scrollbar-thumb) {
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--primary) 55%, transparent);
+    }
+
+    @media (min-width: 640px) {
+        :global(.pdf-reader-shell:fullscreen .pdf-viewer-stage) {
+            height: calc(100dvh - 7.75rem);
+        }
     }
 </style>
