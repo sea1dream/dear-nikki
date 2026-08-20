@@ -31,6 +31,8 @@ let uploading = false;
 let uploadProgress = 0;
 let uploadStatus = "";
 let deletingId = "";
+let pendingDelete: ResourceItem | null = null;
+let deleteError = "";
 let failedCoverUrls: string[] = [];
 let title = "";
 let author = "";
@@ -38,6 +40,7 @@ let description = "";
 let file: File | null = null;
 let titleInput: HTMLInputElement;
 let fileInput: HTMLInputElement;
+let deleteCancelButton: HTMLButtonElement;
 
 $: normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
 $: filteredResources = normalizedQuery
@@ -308,24 +311,50 @@ async function logout(): Promise<void> {
     notice = "已退出管理账号";
 }
 
-async function removeResource(resource: ResourceItem): Promise<void> {
-    if (!window.confirm(`确定删除《${resource.title}》吗？`)) return;
+function requestDelete(resource: ResourceItem): void {
+    pendingDelete = resource;
+    deleteError = "";
+    tick().then(() => deleteCancelButton?.focus());
+}
+
+function closeDelete(): void {
+    if (deletingId) return;
+    pendingDelete = null;
+    deleteError = "";
+}
+
+async function confirmDelete(): Promise<void> {
+    const resource = pendingDelete;
+    if (!resource || deletingId) return;
 
     deletingId = resource.id;
-    const response = await fetch(`/api/resources/${resource.id}/`, {
-        method: "DELETE",
-    });
-    if (response.ok) {
+    deleteError = "";
+    try {
+        const response = await fetch(`/api/resources/${resource.id}/`, {
+            method: "DELETE",
+        });
+        if (!response.ok) {
+            deleteError = await readError(response, "删除失败，请稍后重试");
+            return;
+        }
+
         resources = resources.filter((item) => item.id !== resource.id);
-        notice = "资源已删除";
-    } else {
-        notice = await readError(response, "删除失败");
+        notice = `《${resource.title}》已删除`;
+        pendingDelete = null;
+    } catch {
+        deleteError = "删除失败，请检查网络后重试";
+    } finally {
+        deletingId = "";
     }
-    deletingId = "";
 }
 
 function handleWindowKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape" && uploadOpen) closeUpload();
+    if (event.key !== "Escape") return;
+    if (pendingDelete) {
+        closeDelete();
+    } else if (uploadOpen) {
+        closeUpload();
+    }
 }
 </script>
 
@@ -514,7 +543,7 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                                         aria-label={`删除 ${resource.title}`}
                                         title="删除资源"
                                         disabled={deletingId === resource.id}
-                                        on:click={() => removeResource(resource)}
+                                        on:click={() => requestDelete(resource)}
                                     >
                                         <Icon
                                             icon={deletingId === resource.id
@@ -662,6 +691,79 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                     </button>
                 </div>
             </form>
+        </dialog>
+    </div>
+{/if}
+
+{#if pendingDelete}
+    <div class="fixed inset-0 z-[110] flex items-center justify-center p-4">
+        <button
+            type="button"
+            class="absolute inset-0 cursor-default bg-black/60 backdrop-blur-sm disabled:cursor-wait"
+            aria-label="取消删除"
+            disabled={Boolean(deletingId)}
+            on:click={closeDelete}
+        ></button>
+        <dialog
+            open
+            class="card-base relative z-10 m-0 w-full max-w-md rounded-lg border border-red-500/20 p-5 shadow-2xl dark:border-red-400/25 md:p-6"
+            aria-labelledby="delete-title"
+            aria-describedby="delete-description"
+            aria-modal="true"
+        >
+            <header class="flex items-start gap-3">
+                <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-500" aria-hidden="true">
+                    <Icon icon="material-symbols:warning-rounded" width="24" />
+                </span>
+                <div class="min-w-0">
+                    <p class="text-xs font-semibold uppercase tracking-[0.25em] text-red-500">
+                        Warning
+                    </p>
+                    <h2 id="delete-title" class="mt-1 text-xl font-bold text-90">
+                        确认删除这份 PDF？
+                    </h2>
+                </div>
+            </header>
+
+            <p class="mt-5 break-words border-l-2 border-red-500 pl-3 text-sm font-semibold leading-6 text-90">
+                《{pendingDelete.title}》
+            </p>
+            <p id="delete-description" class="mt-3 text-sm leading-6 text-50">
+                PDF 文件、首页封面和资源信息将被永久删除，已有阅读链接也会失效。此操作无法撤销。
+            </p>
+
+            {#if deleteError}
+                <p class="mt-4 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-sm text-red-600 dark:text-red-400" role="alert">
+                    {deleteError}
+                </p>
+            {/if}
+
+            <div class="mt-6 flex justify-end gap-2">
+                <button
+                    bind:this={deleteCancelButton}
+                    type="button"
+                    class="h-10 rounded-lg bg-[var(--btn-regular-bg)] px-4 text-sm font-semibold text-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] disabled:opacity-40"
+                    disabled={Boolean(deletingId)}
+                    on:click={closeDelete}
+                >
+                    取消
+                </button>
+                <button
+                    type="button"
+                    class="inline-flex h-10 min-w-28 items-center justify-center gap-2 rounded-lg bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 disabled:cursor-wait disabled:opacity-60"
+                    disabled={Boolean(deletingId)}
+                    on:click={confirmDelete}
+                >
+                    <Icon
+                        icon={deletingId
+                            ? "material-symbols:progress-activity"
+                            : "material-symbols:delete-forever-outline-rounded"}
+                        width="18"
+                        class={deletingId ? "animate-spin" : ""}
+                    />
+                    {deletingId ? "删除中" : "永久删除"}
+                </button>
+            </div>
         </dialog>
     </div>
 {/if}
