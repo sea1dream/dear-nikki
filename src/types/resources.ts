@@ -13,6 +13,7 @@ export interface ResourceItem extends ResourceMetadata {
     url: string;
     downloadUrl: string;
     size: number;
+    coverUrl?: string;
 }
 
 export interface ResourceListResponse {
@@ -26,6 +27,10 @@ export interface ResourceUploadPayload {
     author: string;
     description: string;
     originalFilename: string;
+}
+
+export interface ResourceUploadRequest extends ResourceUploadPayload {
+    asset: "book" | "cover";
 }
 
 export interface ResourceAuthUser {

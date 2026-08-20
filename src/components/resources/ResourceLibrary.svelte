@@ -7,11 +7,13 @@ import {
     MAX_PDF_SIZE_LABEL,
     MULTIPART_UPLOAD_THRESHOLD,
 } from "@/constants/resources";
+import { createPdfCover } from "@/lib/browser/pdf-cover";
 import type {
     ResourceAuthResponse,
     ResourceItem,
     ResourceListResponse,
     ResourceUploadPayload,
+    ResourceUploadRequest,
 } from "@/types/resources";
 
 let resources: ResourceItem[] = [];
@@ -27,7 +29,9 @@ let notice = "";
 let uploadOpen = false;
 let uploading = false;
 let uploadProgress = 0;
+let uploadStatus = "";
 let deletingId = "";
+let failedCoverUrls: string[] = [];
 let title = "";
 let author = "";
 let description = "";
@@ -173,7 +177,14 @@ function resetUploadForm(): void {
     description = "";
     file = null;
     uploadProgress = 0;
+    uploadStatus = "";
     if (fileInput) fileInput.value = "";
+}
+
+function handleCoverError(url: string): void {
+    if (!failedCoverUrls.includes(url)) {
+        failedCoverUrls = [...failedCoverUrls, url];
+    }
 }
 
 async function submitUpload(): Promise<void> {
@@ -196,6 +207,7 @@ async function submitUpload(): Promise<void> {
 
     uploading = true;
     uploadProgress = 0;
+    uploadStatus = "正在生成首页封面";
     const id = crypto.randomUUID();
     const payload: ResourceUploadPayload = {
         id,
@@ -206,31 +218,75 @@ async function submitUpload(): Promise<void> {
     };
 
     try {
-        const blob = await upload(`resources/books/${id}.pdf`, file, {
+        let cover: Blob | null = null;
+        try {
+            cover = await createPdfCover(file);
+        } catch {
+            // Protected or malformed PDFs can still be uploaded without a cover.
+        }
+
+        uploadStatus = "正在上传 PDF";
+        const bookRequest: ResourceUploadRequest = {
+            asset: "book",
+            ...payload,
+        };
+        const bookBlob = await upload(`resources/books/${id}.pdf`, file, {
             access: "public",
             handleUploadUrl: "/api/resources/upload/",
-            clientPayload: JSON.stringify(payload),
+            clientPayload: JSON.stringify(bookRequest),
             contentType: "application/pdf",
             multipart: file.size >= MULTIPART_UPLOAD_THRESHOLD,
             onUploadProgress: ({ percentage }) => {
-                uploadProgress = Math.round(percentage);
+                uploadProgress = Math.round(percentage * (cover ? 0.9 : 1));
             },
         });
 
+        let coverUrl: string | undefined;
+        if (cover) {
+            uploadStatus = "正在保存首页封面";
+            uploadProgress = Math.max(uploadProgress, 90);
+            const coverRequest: ResourceUploadRequest = {
+                asset: "cover",
+                ...payload,
+            };
+            try {
+                const coverBlob = await upload(
+                    `resources/covers/${id}.jpg`,
+                    cover,
+                    {
+                        access: "public",
+                        handleUploadUrl: "/api/resources/upload/",
+                        clientPayload: JSON.stringify(coverRequest),
+                        contentType: "image/jpeg",
+                        onUploadProgress: ({ percentage }) => {
+                            uploadProgress = 90 + Math.round(percentage * 0.1);
+                        },
+                    },
+                );
+                coverUrl = coverBlob.url;
+            } catch {
+                // The PDF remains usable when the optional cover upload fails.
+            }
+        }
+
+        uploadProgress = 100;
         resources = [
             {
                 version: 1,
                 ...payload,
                 uploadedAt: new Date().toISOString(),
-                pathname: blob.pathname,
-                url: blob.url,
-                downloadUrl: blob.downloadUrl,
+                pathname: bookBlob.pathname,
+                url: bookBlob.url,
+                downloadUrl: bookBlob.downloadUrl,
                 size: file.size,
+                coverUrl,
             },
             ...resources.filter((resource) => resource.id !== id),
         ];
         uploadOpen = false;
-        notice = "PDF 已上传";
+        notice = coverUrl
+            ? "PDF 已上传，首页已设为封面"
+            : "PDF 已上传，但首页封面生成失败";
         resetUploadForm();
         window.setTimeout(() => {
             void loadResources(true).catch(() => undefined);
@@ -403,8 +459,18 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                     {#each filteredResources as resource (resource.id)}
                         <article class="group flex flex-col gap-4 py-5 sm:flex-row sm:items-center">
                             <div class="flex min-w-0 flex-1 items-start gap-4">
-                                <div class="flex h-14 w-12 shrink-0 items-center justify-center rounded-lg bg-[var(--primary)]/10 text-[var(--primary)] ring-1 ring-[var(--primary)]/15">
+                                <div class="relative flex h-24 w-[4.5rem] shrink-0 items-center justify-center overflow-hidden rounded-md bg-[var(--primary)]/10 text-[var(--primary)] ring-1 ring-[var(--primary)]/15">
                                     <Icon icon="material-symbols:picture-as-pdf-rounded" width="26" />
+                                    {#if resource.coverUrl && !failedCoverUrls.includes(resource.coverUrl)}
+                                        <img
+                                            src={resource.coverUrl}
+                                            alt=""
+                                            loading="lazy"
+                                            decoding="async"
+                                            class="absolute inset-0 h-full w-full bg-white object-contain"
+                                            on:error={() => handleCoverError(resource.coverUrl ?? "")}
+                                        />
+                                    {/if}
                                 </div>
                                 <div class="min-w-0 flex-1">
                                     <h2 class="break-words text-base font-bold text-90 md:text-lg">
@@ -425,7 +491,7 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                                 </div>
                             </div>
 
-                            <div class="flex shrink-0 items-center gap-2 pl-16 sm:pl-0">
+                            <div class="flex shrink-0 items-center gap-2 pl-[5.5rem] sm:pl-0">
                                 <a
                                     href={`/resources/view/?id=${encodeURIComponent(resource.id)}`}
                                     class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 text-sm font-semibold text-white no-underline transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
@@ -511,7 +577,9 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                         on:change={handleFileChange}
                         class="block w-full rounded-lg border border-black/10 bg-[var(--btn-regular-bg)] p-2 text-sm text-75 file:mr-3 file:rounded-md file:border-0 file:bg-[var(--primary)] file:px-3 file:py-2 file:font-semibold file:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] dark:border-white/10"
                     />
-                    <span class="mt-1 block text-xs text-30">最大 {MAX_PDF_SIZE_LABEL}，大文件自动分片上传</span>
+                    <span class="mt-1 block text-xs leading-5 text-30">
+                        最大 {MAX_PDF_SIZE_LABEL}，大文件自动分片上传，并使用首页生成封面
+                    </span>
                 </label>
 
                 <label class="block">
@@ -557,7 +625,7 @@ function handleWindowKeydown(event: KeyboardEvent): void {
                 {#if uploading}
                     <div aria-live="polite">
                         <div class="mb-2 flex items-center justify-between text-xs font-medium text-50">
-                            <span>正在上传</span>
+                            <span>{uploadStatus || "正在上传"}</span>
                             <span>{uploadProgress}%</span>
                         </div>
                         <div class="h-2 overflow-hidden rounded-full bg-[var(--btn-regular-bg)]">

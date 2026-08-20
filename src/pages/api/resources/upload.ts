@@ -1,14 +1,20 @@
 import { type HandleUploadBody, handleUpload } from "@vercel/blob/client";
 import type { APIRoute } from "astro";
-import { MAX_PDF_SIZE, UPLOAD_TOKEN_TTL } from "@/constants/resources";
+import {
+    MAX_PDF_COVER_SIZE,
+    MAX_PDF_SIZE,
+    UPLOAD_TOKEN_TTL,
+} from "@/constants/resources";
 import { getOwnerSession } from "@/lib/server/auth";
 import { isSameOrigin, jsonResponse } from "@/lib/server/http";
 import {
     bookPathname,
+    coverPathname,
     deleteUploadedBlob,
     isBlobConfigured,
-    parseUploadPayload,
+    parseUploadRequest,
     saveResourceMetadata,
+    verifyJpegBlob,
     verifyPdfBlob,
 } from "@/lib/server/resources";
 
@@ -47,23 +53,55 @@ export const POST: APIRoute = async ({ cookies, request }) => {
             request,
             body,
             onBeforeGenerateToken: async (pathname, clientPayload) => {
-                const payload = parseUploadPayload(clientPayload);
-                if (pathname !== bookPathname(payload.id)) {
+                const uploadRequest = parseUploadRequest(clientPayload);
+                const expectedPathname =
+                    uploadRequest.asset === "cover"
+                        ? coverPathname(uploadRequest.id)
+                        : bookPathname(uploadRequest.id);
+                if (pathname !== expectedPathname) {
                     throw new Error("Upload pathname is invalid.");
                 }
 
                 return {
-                    allowedContentTypes: ["application/pdf"],
-                    maximumSizeInBytes: MAX_PDF_SIZE,
+                    allowedContentTypes: [
+                        uploadRequest.asset === "cover"
+                            ? "image/jpeg"
+                            : "application/pdf",
+                    ],
+                    maximumSizeInBytes:
+                        uploadRequest.asset === "cover"
+                            ? MAX_PDF_COVER_SIZE
+                            : MAX_PDF_SIZE,
                     validUntil: Date.now() + UPLOAD_TOKEN_TTL,
                     addRandomSuffix: false,
                     allowOverwrite: false,
                     cacheControlMaxAge: 365 * 24 * 60 * 60,
-                    tokenPayload: JSON.stringify(payload),
+                    tokenPayload: JSON.stringify(uploadRequest),
                 };
             },
             onUploadCompleted: async ({ blob, tokenPayload }) => {
-                const payload = parseUploadPayload(tokenPayload ?? null);
+                const uploadRequest = parseUploadRequest(tokenPayload ?? null);
+                if (uploadRequest.asset === "cover") {
+                    if (
+                        blob.pathname !== coverPathname(uploadRequest.id) ||
+                        blob.contentType !== "image/jpeg"
+                    ) {
+                        await deleteUploadedBlob(blob.pathname);
+                        throw new Error(
+                            "Uploaded blob did not match the cover token.",
+                        );
+                    }
+
+                    if (!(await verifyJpegBlob(blob.url))) {
+                        await deleteUploadedBlob(blob.pathname);
+                        throw new Error(
+                            "Uploaded file does not contain a JPEG header.",
+                        );
+                    }
+                    return;
+                }
+
+                const { asset: _asset, ...payload } = uploadRequest;
                 if (
                     blob.pathname !== bookPathname(payload.id) ||
                     blob.contentType !== "application/pdf"
@@ -92,11 +130,11 @@ export const POST: APIRoute = async ({ cookies, request }) => {
             headers: { "cache-control": "private, no-store" },
         });
     } catch (error) {
-        console.error("Resource PDF upload failed", error);
+        console.error("Resource upload failed", error);
         const message =
             body.type === "blob.generate-client-token" && error instanceof Error
                 ? error.message
-                : "PDF 上传处理失败";
+                : "资源上传处理失败";
         return jsonResponse({ error: message }, { status: 400 });
     }
 };

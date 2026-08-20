@@ -3,9 +3,11 @@ import type {
     ResourceItem,
     ResourceMetadata,
     ResourceUploadPayload,
+    ResourceUploadRequest,
 } from "@/types/resources";
 
 export const RESOURCE_BOOK_PREFIX = "resources/books/";
+export const RESOURCE_COVER_PREFIX = "resources/covers/";
 export const RESOURCE_METADATA_PREFIX = "resources/meta/";
 
 const blobToken =
@@ -48,13 +50,17 @@ export function bookPathname(id: string): string {
     return `${RESOURCE_BOOK_PREFIX}${id}.pdf`;
 }
 
+export function coverPathname(id: string): string {
+    return `${RESOURCE_COVER_PREFIX}${id}.jpg`;
+}
+
 export function metadataPathname(id: string): string {
     return `${RESOURCE_METADATA_PREFIX}${id}.json`;
 }
 
-export function parseUploadPayload(
+export function parseUploadRequest(
     value: string | null,
-): ResourceUploadPayload {
+): ResourceUploadRequest {
     if (!value) throw new Error("Upload metadata is missing.");
 
     let parsed: unknown;
@@ -70,8 +76,13 @@ export function parseUploadPayload(
     const input = parsed as Record<string, unknown>;
     const id = cleanText(input.id, "id", 36, true);
     if (!isResourceId(id)) throw new Error("Resource id is invalid.");
+    const asset = input.asset === undefined ? "book" : input.asset;
+    if (asset !== "book" && asset !== "cover") {
+        throw new Error("Upload asset type is invalid.");
+    }
 
     return {
+        asset,
         id,
         title: cleanText(input.title, "title", 160, true),
         author: cleanText(input.author, "author", 120),
@@ -140,9 +151,15 @@ function idFromBookPathname(pathname: string): string | null {
     return match?.[1] && isResourceId(match[1]) ? match[1] : null;
 }
 
+function idFromCoverPathname(pathname: string): string | null {
+    const match = pathname.match(/^resources\/covers\/([0-9a-f-]{36})\.jpg$/iu);
+    return match?.[1] && isResourceId(match[1]) ? match[1] : null;
+}
+
 export async function listResources(): Promise<ResourceItem[]> {
-    const [bookBlobs, metadataBlobs] = await Promise.all([
+    const [bookBlobs, coverBlobs, metadataBlobs] = await Promise.all([
         listAll(RESOURCE_BOOK_PREFIX),
+        listAll(RESOURCE_COVER_PREFIX),
         listAll(RESOURCE_METADATA_PREFIX),
     ]);
     const metadata = await Promise.all(metadataBlobs.map(readMetadata));
@@ -150,6 +167,12 @@ export async function listResources(): Promise<ResourceItem[]> {
         metadata
             .filter((item): item is ResourceMetadata => item !== null)
             .map((item) => [item.id, item]),
+    );
+    const coverById = new Map(
+        coverBlobs.flatMap((blob) => {
+            const id = idFromCoverPathname(blob.pathname);
+            return id ? [[id, blob] as const] : [];
+        }),
     );
 
     return bookBlobs
@@ -172,6 +195,7 @@ export async function listResources(): Promise<ResourceItem[]> {
                 url: blob.url,
                 downloadUrl: blob.downloadUrl,
                 size: blob.size,
+                coverUrl: coverById.get(id)?.url,
             };
         })
         .filter((item): item is ResourceItem => item !== null)
@@ -193,6 +217,20 @@ export async function verifyPdfBlob(url: string): Promise<boolean> {
     }
     const header = decoder.decode(await response.arrayBuffer());
     return header.includes("%PDF-");
+}
+
+export async function verifyJpegBlob(url: string): Promise<boolean> {
+    const response = await fetch(url, {
+        headers: { range: "bytes=0-2" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(15_000),
+    });
+    if (response.status !== 206) {
+        await response.body?.cancel();
+        return false;
+    }
+    const header = new Uint8Array(await response.arrayBuffer());
+    return header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
 }
 
 const decoder = new TextDecoder("latin1");
@@ -223,5 +261,8 @@ export async function deleteUploadedBlob(pathname: string): Promise<void> {
 
 export async function deleteResource(id: string): Promise<void> {
     if (!isResourceId(id)) throw new Error("Resource id is invalid.");
-    await del([bookPathname(id), metadataPathname(id)], blobOptions());
+    await del(
+        [bookPathname(id), coverPathname(id), metadataPathname(id)],
+        blobOptions(),
+    );
 }
