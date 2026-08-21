@@ -51,11 +51,6 @@ export const navBarConfig: NavBarConfig = {
         },
         LinkPreset.About,
         LinkPreset.Link, // 友链
-        {
-            name: "GitHub",
-            url: "https://github.com/sea1dream/dear-nikki", // Internal links should not include the base path, as it is automatically added
-            external: true, // Show an external link icon and will open in a new tab
-        },
     ],
     logo: {
         image: true, // Display an image as logo on the navbar
