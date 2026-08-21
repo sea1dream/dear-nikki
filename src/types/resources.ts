@@ -5,6 +5,7 @@ export interface ResourceMetadata {
     author: string;
     description: string;
     originalFilename: string;
+    contentSha256?: string;
     uploadedAt: string;
     pathname: string;
 }
@@ -27,6 +28,8 @@ export interface ResourceUploadPayload {
     author: string;
     description: string;
     originalFilename: string;
+    contentSha256: string;
+    fileSize: number;
 }
 
 export interface ResourceUploadRequest extends ResourceUploadPayload {

@@ -7,6 +7,7 @@ import {
     MAX_PDF_SIZE_LABEL,
     MULTIPART_UPLOAD_THRESHOLD,
 } from "@/constants/resources";
+import { sha256File } from "@/lib/browser/file-hash";
 import { createPdfCover } from "@/lib/browser/pdf-cover";
 import type {
     ResourceAuthResponse,
@@ -208,28 +209,31 @@ async function submitUpload(): Promise<void> {
         notice = `PDF 不能超过 ${MAX_PDF_SIZE_LABEL}`;
         return;
     }
+    if (file.size < 1) {
+        notice = "PDF 文件不能为空";
+        return;
+    }
 
     uploading = true;
     uploadProgress = 0;
-    uploadStatus = "正在生成首页封面";
-    const id = crypto.randomUUID();
-    const payload: ResourceUploadPayload = {
-        id,
-        title: title.trim(),
-        author: author.trim(),
-        description: description.trim(),
-        originalFilename: file.name,
-    };
+    uploadStatus = "正在计算内容指纹";
 
     try {
-        let cover: Blob | null = null;
-        try {
-            cover = await createPdfCover(file);
-        } catch {
-            // Protected or malformed PDFs can still be uploaded without a cover.
-        }
+        const contentSha256 = await sha256File(file, (percentage) => {
+            uploadProgress = Math.round(percentage * 0.1);
+        });
+        const id = crypto.randomUUID();
+        const payload: ResourceUploadPayload = {
+            id,
+            title: title.trim(),
+            author: author.trim(),
+            description: description.trim(),
+            originalFilename: file.name,
+            contentSha256,
+            fileSize: file.size,
+        };
 
-        uploadStatus = "正在上传 PDF";
+        uploadStatus = "正在检查资源库";
         const bookRequest: ResourceUploadRequest = {
             asset: "book",
             ...payload,
@@ -241,14 +245,23 @@ async function submitUpload(): Promise<void> {
             contentType: "application/pdf",
             multipart: file.size >= MULTIPART_UPLOAD_THRESHOLD,
             onUploadProgress: ({ percentage }) => {
-                uploadProgress = Math.round(percentage * (cover ? 0.9 : 1));
+                uploadStatus = "正在上传 PDF";
+                uploadProgress = 10 + Math.round(percentage * 0.8);
             },
         });
+
+        uploadStatus = "正在生成首页封面";
+        uploadProgress = Math.max(uploadProgress, 90);
+        let cover: Blob | null = null;
+        try {
+            cover = await createPdfCover(file);
+        } catch {
+            // Protected or malformed PDFs can still be uploaded without a cover.
+        }
 
         let coverUrl: string | undefined;
         if (cover) {
             uploadStatus = "正在保存首页封面";
-            uploadProgress = Math.max(uploadProgress, 90);
             const coverRequest: ResourceUploadRequest = {
                 asset: "cover",
                 ...payload,
@@ -277,7 +290,12 @@ async function submitUpload(): Promise<void> {
         resources = [
             {
                 version: 1,
-                ...payload,
+                id: payload.id,
+                title: payload.title,
+                author: payload.author,
+                description: payload.description,
+                originalFilename: payload.originalFilename,
+                contentSha256: payload.contentSha256,
                 uploadedAt: new Date().toISOString(),
                 pathname: bookBlob.pathname,
                 url: bookBlob.url,

@@ -8,6 +8,7 @@ import {
 import { getOwnerSession } from "@/lib/server/auth";
 import { isSameOrigin, jsonResponse } from "@/lib/server/http";
 import {
+    assertUniqueResourceContent,
     bookPathname,
     coverPathname,
     deleteUploadedBlob,
@@ -61,6 +62,13 @@ export const POST: APIRoute = async ({ cookies, request }) => {
                 if (pathname !== expectedPathname) {
                     throw new Error("Upload pathname is invalid.");
                 }
+                if (uploadRequest.asset === "book") {
+                    await assertUniqueResourceContent(
+                        uploadRequest.id,
+                        uploadRequest.contentSha256,
+                        uploadRequest.fileSize,
+                    );
+                }
 
                 return {
                     allowedContentTypes: [
@@ -113,9 +121,9 @@ export const POST: APIRoute = async ({ cookies, request }) => {
                 }
 
                 try {
-                    if (!(await verifyPdfBlob(blob.url))) {
+                    if (!(await verifyPdfBlob(blob.url, payload.fileSize))) {
                         throw new Error(
-                            "Uploaded file does not contain a PDF header.",
+                            "Uploaded file does not match its PDF metadata.",
                         );
                     }
                     await saveResourceMetadata(payload, blob.pathname);
