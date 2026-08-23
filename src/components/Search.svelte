@@ -178,7 +178,7 @@ $: initialized && queueSearch(keywordMobile, false);
         on:focus={() => queueSearch(keywordDesktop, true)}
         disabled={!initialized}
         class="transition-all pl-10 pr-8 text-sm bg-transparent outline-none
-           h-full w-40 active:w-60 focus:w-60 rounded-[var(--radius-large)]
+           h-full w-40 active:w-52 focus:w-52 xl:active:w-60 xl:focus:w-60 rounded-[var(--radius-large)]
            text-black/50 dark:text-white/50
            focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)]"
     />
