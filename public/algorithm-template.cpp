@@ -766,6 +766,460 @@ class PrimeComb {
 // comb.C(10, 11);             // 0，k > n
 // comb.ensure(200'000);       // 之后可线性增量扩容，不会缩小已有表
 
+// 扩展欧几里得、模逆、线性同余、广义 CRT，以及数论中的 Möbius 反演。
+namespace nt {
+
+struct ExgcdResult {
+    u64 gcd;
+    i128 x;
+    i128 y;
+};
+
+namespace detail {
+
+// 不能直接对 LLONG_MIN 调用 abs；先提升到 i128 再取绝对值。
+constexpr u64 magnitude(i64 value) noexcept {
+    const i128 wide = static_cast<i128>(value);
+    return static_cast<u64>(wide < 0 ? -wide : wide);
+}
+
+constexpr u64 normalize_mod(i128 value, u64 modulus) noexcept {
+    assert(modulus != 0);
+    const i128 wide_modulus = static_cast<i128>(modulus);
+    value %= wide_modulus;
+    if (value < 0) value += wide_modulus;
+    return static_cast<u64>(value);
+}
+
+}  // namespace detail
+
+// 返回 gcd >= 0 且 a*x + b*y = gcd。
+// gcd 用 u64，因 gcd(LLONG_MIN, 0) = 2^63；(0, 0) 返回 {0, 0, 0}。
+constexpr ExgcdResult exgcd(i64 a, i64 b) noexcept {
+    i128 r0 = static_cast<i128>(a);
+    i128 r1 = static_cast<i128>(b);
+    const bool negative_a = r0 < 0;
+    const bool negative_b = r1 < 0;
+    if (negative_a) r0 = -r0;
+    if (negative_b) r1 = -r1;
+
+    if (r0 == 0 && r1 == 0) return {0, 0, 0};
+
+    i128 x0 = 1;
+    i128 x1 = 0;
+    i128 y0 = 0;
+    i128 y1 = 1;
+    while (r1 != 0) {
+        const i128 quotient = r0 / r1;
+        const i128 next_r = r0 - quotient * r1;
+        const i128 next_x = x0 - quotient * x1;
+        const i128 next_y = y0 - quotient * y1;
+        r0 = r1;
+        r1 = next_r;
+        x0 = x1;
+        x1 = next_x;
+        y0 = y1;
+        y1 = next_y;
+    }
+
+    if (negative_a) x0 = -x0;
+    if (negative_b) y0 = -y0;
+    return {static_cast<u64>(r0), x0, y0};
+}
+
+// modulus 可为负并按其绝对值处理；modulus == 0 非法。
+// 无逆元返回 nullopt；模数为 +/-1 时唯一的规范剩余是 0。
+inline optional<u64> inverse_mod(i64 value, i64 modulus) {
+    if (modulus == 0) {
+        throw std::invalid_argument("inverse_mod: modulus must be non-zero");
+    }
+    const ExgcdResult result = exgcd(value, modulus);
+    if (result.gcd != 1) return nullopt;
+    return detail::normalize_mod(result.x, detail::magnitude(modulus));
+}
+
+struct LinearCongruence {
+    u64 residue;
+    u64 modulus;
+};
+
+// 求 a*x == b (mod modulus)。有解时全部解为
+// x == residue (mod 返回的 modulus)，且 residue 是规范剩余。
+inline optional<LinearCongruence> solve_linear_congruence(i64 a, i64 b,
+                                                          i64 modulus) {
+    if (modulus == 0) {
+        throw std::invalid_argument(
+            "solve_linear_congruence: modulus must be non-zero");
+    }
+
+    const ExgcdResult result = exgcd(a, modulus);
+    const i128 gcd = static_cast<i128>(result.gcd);
+    if (static_cast<i128>(b) % gcd != 0) return nullopt;
+
+    const u64 period = detail::magnitude(modulus) / result.gcd;
+    const i128 solution = result.x * (static_cast<i128>(b) / gcd);
+    return LinearCongruence{detail::normalize_mod(solution, period), period};
+}
+
+struct CRTResult {
+    i128 residue;
+    i128 modulus;
+};
+
+// 两式广义 CRT：模数无需互质，负模数按绝对值处理。
+// 返回 x == residue (mod modulus)；不相容返回 nullopt，零模数抛异常。
+// 两个 i64 模数的最小公倍数可能接近 2^126，故结果使用 i128。
+inline optional<CRTResult> crt_pair(i64 residue1, i64 modulus1, i64 residue2,
+                                    i64 modulus2) {
+    if (modulus1 == 0 || modulus2 == 0) {
+        throw std::invalid_argument("crt_pair: moduli must be non-zero");
+    }
+
+    const u64 positive_modulus1 = detail::magnitude(modulus1);
+    const u64 positive_modulus2 = detail::magnitude(modulus2);
+    const u64 normalized1 =
+        detail::normalize_mod(static_cast<i128>(residue1), positive_modulus1);
+    const u64 normalized2 =
+        detail::normalize_mod(static_cast<i128>(residue2), positive_modulus2);
+
+    const ExgcdResult result = exgcd(modulus1, modulus2);
+    const i128 difference =
+        static_cast<i128>(normalized2) - static_cast<i128>(normalized1);
+    const i128 gcd = static_cast<i128>(result.gcd);
+    if (difference % gcd != 0) return nullopt;
+
+    // result.x 对应带符号的 modulus1，先转成正模数的 Bézout 系数。
+    const i128 inverse = modulus1 < 0 ? -result.x : result.x;
+    const u64 step_modulus = positive_modulus2 / result.gcd;
+    const u64 step =
+        detail::normalize_mod((difference / gcd) * inverse, step_modulus);
+    const i128 lcm = static_cast<i128>(positive_modulus1 / result.gcd) *
+                     static_cast<i128>(positive_modulus2);
+    i128 answer = static_cast<i128>(normalized1) +
+                  static_cast<i128>(positive_modulus1) * step;
+    answer %= lcm;
+    if (answer < 0) answer += lcm;
+    return CRTResult{answer, lcm};
+}
+
+// 线性筛同时求 mu[1..limit] 和 Mertens 前缀和。
+// mu[0] = 0，mu[1] = 1，mertens[x] = sum_{i=1}^x mu[i]。
+// 字段公开便于直接查询；四种变换要求此表由下方线性筛生成且未被修改。
+struct MobiusTable {
+    int limit = 0;
+    vector<int> primes;
+    vector<int> mu{0};
+    vector<i64> mertens{0};
+};
+
+// 时间、空间均为 O(limit)。
+inline MobiusTable linear_mobius_sieve(int limit) {
+    if (limit < 0) {
+        throw std::invalid_argument(
+            "linear_mobius_sieve: limit must be non-negative");
+    }
+
+    MobiusTable result;
+    result.limit = limit;
+    const size_t size = static_cast<size_t>(limit) + 1;
+    result.mu.assign(size, 0);
+    result.mertens.assign(size, 0);
+    vector<unsigned char> composite(size);
+    if (limit >= 1) result.mu[1] = 1;
+
+    for (size_t i = 2; i < size; ++i) {
+        if (!composite[i]) {
+            result.primes.push_back(static_cast<int>(i));
+            result.mu[i] = -1;
+        }
+        for (int prime : result.primes) {
+            const size_t p = static_cast<size_t>(prime);
+            if (p > static_cast<size_t>(limit) / i) break;
+            const size_t value = i * p;
+            composite[value] = 1;
+            if (i % p == 0) {
+                result.mu[value] = 0;
+                break;
+            }
+            result.mu[value] = -result.mu[i];
+        }
+    }
+
+    for (size_t i = 1; i < size; ++i) {
+        result.mertens[i] = result.mertens[i - 1] + result.mu[i];
+    }
+    return result;
+}
+
+namespace detail {
+
+inline i64 normalize_i64_mod(i64 value, i64 modulus) noexcept {
+    value %= modulus;
+    if (value < 0) value += modulus;
+    return value;
+}
+
+inline i64 add_mod(i64 a, i64 b, i64 modulus) noexcept {
+    assert(0 <= a && a < modulus && 0 <= b && b < modulus);
+    return a >= modulus - b ? a - (modulus - b) : a + b;
+}
+
+inline i64 sub_mod(i64 a, i64 b, i64 modulus) noexcept {
+    assert(0 <= a && a < modulus && 0 <= b && b < modulus);
+    return a >= b ? a - b : modulus - (b - a);
+}
+
+inline int checked_divisibility_transform(const vector<i64>& values,
+                                          const MobiusTable& table,
+                                          i64 modulus) {
+    if (modulus <= 0) {
+        throw std::invalid_argument(
+            "divisibility transform: modulus must be positive");
+    }
+    if (values.empty()) {
+        throw std::invalid_argument(
+            "divisibility transform: index 0 placeholder is required");
+    }
+
+    const size_t n = values.size() - 1;
+    if (n > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::length_error("divisibility transform: range is too large");
+    }
+    if (table.limit < static_cast<int>(n) || table.mu.size() <= n ||
+        table.mertens.size() <= n) {
+        throw std::out_of_range(
+            "divisibility transform: Mobius table is too small");
+    }
+    return static_cast<int>(n);
+}
+
+inline void normalize_from_one(vector<i64>& values, i64 modulus) noexcept {
+    for (size_t i = 1; i < values.size(); ++i) {
+        values[i] = normalize_i64_mod(values[i], modulus);
+    }
+}
+
+}  // namespace detail
+
+// 下列四种变换只处理下标 1..n，values[0] 是占位符且保持不变。
+// 任意正 i64 模数均可（包括 1、偶数和合数）；单次复杂度
+// sum_{p<=n} floor(n/p) = O(n log log n)，额外空间 O(1)。
+
+// F[x] = sum_{d|x} f[d]。
+inline void divisor_zeta_transform(vector<i64>& values,
+                                   const MobiusTable& table, i64 modulus) {
+    const int n =
+        detail::checked_divisibility_transform(values, table, modulus);
+    detail::normalize_from_one(values, modulus);
+    for (int prime : table.primes) {
+        if (prime > n) break;
+        for (int i = 1, end = n / prime; i <= end; ++i) {
+            values[i * prime] =
+                detail::add_mod(values[i * prime], values[i], modulus);
+        }
+    }
+}
+
+// f[x] = sum_{d|x} mu[d] * F[x/d]，是 divisor_zeta_transform 的逆。
+inline void divisor_mobius_transform(vector<i64>& values,
+                                     const MobiusTable& table, i64 modulus) {
+    const int n =
+        detail::checked_divisibility_transform(values, table, modulus);
+    detail::normalize_from_one(values, modulus);
+    for (int prime : table.primes) {
+        if (prime > n) break;
+        for (int i = n / prime; i >= 1; --i) {
+            values[i * prime] =
+                detail::sub_mod(values[i * prime], values[i], modulus);
+        }
+    }
+}
+
+// F[x] = sum_{x|multiple, multiple<=n} f[multiple]。
+inline void multiple_zeta_transform(vector<i64>& values,
+                                    const MobiusTable& table, i64 modulus) {
+    const int n =
+        detail::checked_divisibility_transform(values, table, modulus);
+    detail::normalize_from_one(values, modulus);
+    for (int prime : table.primes) {
+        if (prime > n) break;
+        for (int i = n / prime; i >= 1; --i) {
+            values[i] = detail::add_mod(values[i], values[i * prime], modulus);
+        }
+    }
+}
+
+// f[x] = sum_{k<=n/x} mu[k] * F[x*k]，是 multiple_zeta_transform 的逆。
+inline void multiple_mobius_transform(vector<i64>& values,
+                                      const MobiusTable& table, i64 modulus) {
+    const int n =
+        detail::checked_divisibility_transform(values, table, modulus);
+    detail::normalize_from_one(values, modulus);
+    for (int prime : table.primes) {
+        if (prime > n) break;
+        for (int i = 1, end = n / prime; i <= end; ++i) {
+            values[i] = detail::sub_mod(values[i], values[i * prime], modulus);
+        }
+    }
+}
+
+}  // namespace nt
+
+// exGCD / Möbius 使用示例：
+// auto eg = nt::exgcd(-30, 18);  // gcd=6，且 -30*eg.x+18*eg.y=6
+// auto inv = nt::inverse_mod(3, 11);  // 4
+// auto equation = nt::solve_linear_congruence(6, 8, 14); // x=6 (mod 7)
+// auto crt = nt::crt_pair(2, 6, 5, 9);                  // x=14 (mod 18)
+// auto mobius = nt::linear_mobius_sieve(1'000'000);
+// vector<i64> arithmetic_values(n + 1);  // 下标 0 仅占位
+// nt::divisor_zeta_transform(arithmetic_values, mobius, 1'000'000'007);
+// nt::divisor_mobius_transform(arithmetic_values, mobius, 1'000'000'007);
+
+// 第一类（无符号/有符号）与第二类斯特林数。
+// c(n,k)=c(n-1,k-1)+(n-1)c(n-1,k)，有符号 s 将加号改为减号；
+// S(n,k)=S(n-1,k-1)+k*S(n-1,k)。
+// make_row 只保留第 n 行，O(n^2) 时间、O(n) 空间；make_table 保存 0..n 行，
+// O(n^2) 时间和空间。结果统一对任意正 i64 modulus 取模。
+namespace stirling {
+
+enum class Kind { FirstUnsigned, FirstSigned, Second };
+
+using Row = vector<u64>;
+using Table = vector<Row>;
+
+namespace detail {
+
+inline u64 checked_modulus(i64 modulus) {
+    if (modulus <= 0) {
+        throw std::invalid_argument("Stirling modulus must be positive");
+    }
+    return static_cast<u64>(modulus);
+}
+
+inline void require_kind(Kind kind) {
+    if (kind != Kind::FirstUnsigned && kind != Kind::FirstSigned &&
+        kind != Kind::Second) {
+        throw std::invalid_argument("unknown Stirling number kind");
+    }
+}
+
+inline void require_order(size_t order) {
+    if (order == std::numeric_limits<size_t>::max()) {
+        throw std::length_error("Stirling order is too large");
+    }
+}
+
+constexpr u64 add_mod(u64 a, u64 b, u64 modulus) noexcept {
+    assert(a < modulus && b < modulus);
+    return a >= modulus - b ? a - (modulus - b) : a + b;
+}
+
+constexpr u64 sub_mod(u64 a, u64 b, u64 modulus) noexcept {
+    assert(a < modulus && b < modulus);
+    return a >= b ? a - b : modulus - (b - a);
+}
+
+inline u64 transition(u64 lower, u64 same, size_t n, size_t k, Kind kind,
+                      u64 modulus) noexcept {
+    const size_t raw_factor = kind == Kind::Second ? k : n - 1;
+    const u64 factor = static_cast<u64>(static_cast<u128>(raw_factor) %
+                                        static_cast<u128>(modulus));
+    const u64 product = ::mul_mod(same, factor, modulus);
+    return kind == Kind::FirstSigned ? sub_mod(lower, product, modulus)
+                                     : add_mod(lower, product, modulus);
+}
+
+}  // namespace detail
+
+// 返回 [T(n,0), T(n,1), ..., T(n,n)]。
+inline Row make_row(size_t n, Kind kind, i64 modulus) {
+    detail::require_order(n);
+    detail::require_kind(kind);
+    const u64 mod = detail::checked_modulus(modulus);
+
+    Row row(n + 1);
+    row[0] = 1 % mod;
+    for (size_t current = 1; current <= n; ++current) {
+        for (size_t k = current; k >= 1; --k) {
+            row[k] =
+                detail::transition(row[k - 1], row[k], current, k, kind, mod);
+        }
+        row[0] = 0;
+    }
+    return row;
+}
+
+// 返回三角表 table[n][k]；k > n 时请用 get(table,n,k) 安全查询。
+inline Table make_table(size_t max_n, Kind kind, i64 modulus) {
+    detail::require_order(max_n);
+    detail::require_kind(kind);
+    const u64 mod = detail::checked_modulus(modulus);
+
+    Table table;
+    if (max_n >= table.max_size()) {
+        throw std::length_error("Stirling table is too large");
+    }
+    table.reserve(max_n + 1);
+    table.push_back(Row{1 % mod});
+    for (size_t n = 1; n <= max_n; ++n) {
+        const Row& previous = table.back();
+        Row current(n + 1);
+        for (size_t k = 1; k <= n; ++k) {
+            const u64 same = k < previous.size() ? previous[k] : 0;
+            current[k] =
+                detail::transition(previous[k - 1], same, n, k, kind, mod);
+        }
+        table.push_back(std::move(current));
+    }
+    return table;
+}
+
+inline u64 get(const Row& row, size_t k) noexcept {
+    return k < row.size() ? row[k] : 0;
+}
+
+inline u64 get(const Table& table, size_t n, size_t k) {
+    if (n >= table.size()) {
+        throw std::out_of_range("Stirling row was not prepared");
+    }
+    return k < table[n].size() ? table[n][k] : 0;
+}
+
+inline Row first_unsigned_row(size_t n, i64 modulus) {
+    return make_row(n, Kind::FirstUnsigned, modulus);
+}
+
+inline Row first_signed_row(size_t n, i64 modulus) {
+    return make_row(n, Kind::FirstSigned, modulus);
+}
+
+inline Row second_row(size_t n, i64 modulus) {
+    return make_row(n, Kind::Second, modulus);
+}
+
+inline Table first_unsigned_table(size_t n, i64 modulus) {
+    return make_table(n, Kind::FirstUnsigned, modulus);
+}
+
+inline Table first_signed_table(size_t n, i64 modulus) {
+    return make_table(n, Kind::FirstSigned, modulus);
+}
+
+inline Table second_table(size_t n, i64 modulus) {
+    return make_table(n, Kind::Second, modulus);
+}
+
+}  // namespace stirling
+
+// Stirling 使用示例（signed_first 的负数以模意义表示）：
+// auto first = stirling::first_unsigned_row(4, 1'000'000'007);
+// // first = {0, 6, 11, 6, 1}
+// auto signed_first = stirling::first_signed_row(4, 1'000'000'007);
+// auto second = stirling::second_row(5, 1'000'000'007);
+// // second = {0, 1, 15, 25, 10, 1}
+// auto all_second = stirling::second_table(1000, 1'000'000'007);
+// stirling::get(all_second, 1000, 20);  // S(1000,20)
+
 // 多项式卷积：浮点 FFT、998244353 NTT、任意正 int 模 MTT、拆系数 FFT。
 // 四种 convolution_* 都允许负输入，空数组返回空数组，结果长度为 n+m-1。
 namespace poly {
@@ -1268,6 +1722,238 @@ std::vector<std::uint32_t> convolution_split_fft(const std::vector<A>& a,
     return result;
 }
 
+// 位运算卷积：OR/AND/XOR FWT，以及子集格上的快速 Zeta/Möbius 变换。
+// 原地变换为 O(n log n)、额外空间 O(1)；n 必须为 2 的幂。
+enum class FWTType { Or, And, Xor };
+
+namespace detail {
+
+inline u64 checked_fwt_modulus(i64 modulus) {
+    if (modulus <= 0) {
+        throw std::invalid_argument("FWT/FMT modulus must be positive");
+    }
+    return static_cast<u64>(modulus);
+}
+
+inline void require_fwt_type(FWTType type) {
+    if (type != FWTType::Or && type != FWTType::And && type != FWTType::Xor) {
+        throw std::invalid_argument("unknown FWT type");
+    }
+}
+
+inline int mask_bits(std::size_t size) {
+    if (size == 0) return 0;
+    if ((size & (size - 1)) != 0) {
+        throw std::invalid_argument("FWT/FMT length must be a power of two");
+    }
+    int bits = 0;
+    while (size > 1) {
+        size >>= 1;
+        ++bits;
+    }
+    return bits;
+}
+
+inline int require_same_mask_shape(std::size_t a_size, std::size_t b_size) {
+    if (a_size != b_size) {
+        throw std::invalid_argument(
+            "bitmask convolution inputs must have equal length");
+    }
+    return mask_bits(a_size);
+}
+
+inline u64 add_mod(u64 a, u64 b, u64 modulus) noexcept {
+    assert(a < modulus && b < modulus);
+    return a >= modulus - b ? a - (modulus - b) : a + b;
+}
+
+inline u64 sub_mod(u64 a, u64 b, u64 modulus) noexcept {
+    assert(a < modulus && b < modulus);
+    return a >= b ? a - b : modulus - (b - a);
+}
+
+inline void require_xor_inverse(std::size_t size, FWTType type, u64 modulus) {
+    if (type == FWTType::Xor && size > 1 && (modulus & 1) == 0) {
+        throw std::invalid_argument(
+            "inverse XOR FWT requires an odd modulus when length > 1");
+    }
+}
+
+}  // namespace detail
+
+// 原地 FWT。values 是 u64，会先按 modulus 归一化；参数错误时不修改。
+// OR/AND 在任意正模下均可逆；XOR 长度 > 1 时逆变换要求奇数模。
+inline void fwt(std::vector<u64>& values, FWTType type, bool inverse,
+                i64 modulus) {
+    const u64 mod = detail::checked_fwt_modulus(modulus);
+    detail::require_fwt_type(type);
+    const int bits = detail::mask_bits(values.size());
+    if (inverse) detail::require_xor_inverse(values.size(), type, mod);
+
+    for (u64& value : values) value %= mod;
+    if (values.empty()) return;
+
+    for (std::size_t half = 1; half < values.size(); half <<= 1) {
+        for (std::size_t left = 0; left < values.size(); left += half << 1) {
+            for (std::size_t i = 0; i < half; ++i) {
+                u64& lower = values[left + i];
+                u64& upper = values[left + i + half];
+                if (type == FWTType::Or) {
+                    upper = inverse ? detail::sub_mod(upper, lower, mod)
+                                    : detail::add_mod(upper, lower, mod);
+                } else if (type == FWTType::And) {
+                    lower = inverse ? detail::sub_mod(lower, upper, mod)
+                                    : detail::add_mod(lower, upper, mod);
+                } else {
+                    const u64 sum = detail::add_mod(lower, upper, mod);
+                    const u64 difference = detail::sub_mod(lower, upper, mod);
+                    lower = sum;
+                    upper = difference;
+                }
+            }
+        }
+    }
+
+    if (type == FWTType::Xor && inverse && bits > 0) {
+        const u64 inverse_two = mod / 2 + 1;
+        u64 inverse_size = 1 % mod;
+        for (int i = 0; i < bits; ++i) {
+            inverse_size = ::mul_mod(inverse_size, inverse_two, mod);
+        }
+        for (u64& value : values) {
+            value = ::mul_mod(value, inverse_size, mod);
+        }
+    }
+}
+
+inline void fwt_or(std::vector<u64>& values, bool inverse, i64 modulus) {
+    fwt(values, FWTType::Or, inverse, modulus);
+}
+
+inline void fwt_and(std::vector<u64>& values, bool inverse, i64 modulus) {
+    fwt(values, FWTType::And, inverse, modulus);
+}
+
+inline void fwt_xor(std::vector<u64>& values, bool inverse, i64 modulus) {
+    fwt(values, FWTType::Xor, inverse, modulus);
+}
+
+// FMT 语义别名：
+// subset zeta:   f[S] <- sum_{T subseteq S} f[T]
+// superset zeta: f[S] <- sum_{T supseteq S} f[T]
+// Möbius 变换分别是二者的逆变换。
+inline void subset_zeta_transform(std::vector<u64>& values, i64 modulus) {
+    fwt_or(values, false, modulus);
+}
+
+inline void subset_mobius_transform(std::vector<u64>& values, i64 modulus) {
+    fwt_or(values, true, modulus);
+}
+
+inline void superset_zeta_transform(std::vector<u64>& values, i64 modulus) {
+    fwt_and(values, false, modulus);
+}
+
+inline void superset_mobius_transform(std::vector<u64>& values, i64 modulus) {
+    fwt_and(values, true, modulus);
+}
+
+// FWT 位运算卷积。两组输入必须等长，长度必须是 2 的幂；返回同样长度。
+// 卷积包装支持不超过 64 位的有/无符号整数，并正确归一化负数。
+template <typename A, typename B>
+std::vector<u64> convolution_fwt(const std::vector<A>& a,
+                                 const std::vector<B>& b, FWTType type,
+                                 i64 modulus) {
+    static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
+                  "bitmask coefficients must be <= 64-bit integers");
+    const u64 mod = detail::checked_fwt_modulus(modulus);
+    detail::require_fwt_type(type);
+    detail::require_same_mask_shape(a.size(), b.size());
+    detail::require_xor_inverse(a.size(), type, mod);
+    if (a.empty()) return {};
+    if (mod == 1) return std::vector<u64>(a.size(), 0);
+
+    std::vector<u64> fa(a.size()), fb(b.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        fa[i] = detail::normalize_mod(a[i], mod);
+        fb[i] = detail::normalize_mod(b[i], mod);
+    }
+    fwt(fa, type, false, modulus);
+    fwt(fb, type, false, modulus);
+    for (std::size_t i = 0; i < fa.size(); ++i) {
+        fa[i] = ::mul_mod(fa[i], fb[i], mod);
+    }
+    fwt(fa, type, true, modulus);
+    return fa;
+}
+
+template <typename A, typename B>
+std::vector<u64> convolution_fwt_or(const std::vector<A>& a,
+                                    const std::vector<B>& b, i64 modulus) {
+    return convolution_fwt(a, b, FWTType::Or, modulus);
+}
+
+template <typename A, typename B>
+std::vector<u64> convolution_fwt_and(const std::vector<A>& a,
+                                     const std::vector<B>& b, i64 modulus) {
+    return convolution_fwt(a, b, FWTType::And, modulus);
+}
+
+template <typename A, typename B>
+std::vector<u64> convolution_fwt_xor(const std::vector<A>& a,
+                                     const std::vector<B>& b, i64 modulus) {
+    return convolution_fwt(a, b, FWTType::Xor, modulus);
+}
+
+// 标准子集卷积：result[S] = sum_{T subseteq S} a[T] * b[S\T]。
+// 设 n=2^k，复杂度 O(k^2*2^k)，额外空间 O(k*2^k)；任意正模可用。
+// 当前 u64 实现 k=20 时约需 350 MiB，需结合题目内存限制使用。
+template <typename A, typename B>
+std::vector<u64> convolution_subset(const std::vector<A>& a,
+                                    const std::vector<B>& b, i64 modulus) {
+    static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
+                  "subset coefficients must be <= 64-bit integers");
+    const u64 mod = detail::checked_fwt_modulus(modulus);
+    const int bits = detail::require_same_mask_shape(a.size(), b.size());
+    if (a.empty()) return {};
+    if (mod == 1) return std::vector<u64>(a.size(), 0);
+
+    std::vector<unsigned char> rank(a.size());
+    std::vector<std::vector<u64>> ranked_a(bits + 1,
+                                           std::vector<u64>(a.size()));
+    std::vector<std::vector<u64>> ranked_b(bits + 1,
+                                           std::vector<u64>(a.size()));
+    for (std::size_t mask = 0; mask < a.size(); ++mask) {
+        rank[mask] = static_cast<unsigned char>(bitop::popcount(mask));
+        ranked_a[rank[mask]][mask] = detail::normalize_mod(a[mask], mod);
+        ranked_b[rank[mask]][mask] = detail::normalize_mod(b[mask], mod);
+    }
+    for (int current_rank = 0; current_rank <= bits; ++current_rank) {
+        subset_zeta_transform(ranked_a[current_rank], modulus);
+        subset_zeta_transform(ranked_b[current_rank], modulus);
+    }
+
+    std::vector<u64> result(a.size());
+    std::vector<u64> layer(a.size());
+    for (int current_rank = 0; current_rank <= bits; ++current_rank) {
+        for (std::size_t mask = 0; mask < a.size(); ++mask) {
+            u64 value = 0;
+            for (int left_rank = 0; left_rank <= current_rank; ++left_rank) {
+                const u64 product =
+                    ::mul_mod(ranked_a[left_rank][mask],
+                              ranked_b[current_rank - left_rank][mask], mod);
+                value = detail::add_mod(value, product, mod);
+            }
+            layer[mask] = value;
+        }
+        subset_mobius_transform(layer, modulus);
+        for (std::size_t mask = 0; mask < a.size(); ++mask) {
+            if (rank[mask] == current_rank) result[mask] = layer[mask];
+        }
+    }
+    return result;
+}
+
 }  // namespace poly
 
 // 卷积使用示例：
@@ -1279,6 +1965,19 @@ std::vector<std::uint32_t> convolution_split_fft(const std::vector<A>& a,
 //     a, b, 1'000'000'007);  // 浮点拆系数；超界时改用 MTT
 // // 需要单独做变换时：poly::fft(values, inverse)，或
 // // poly::NTT998244353::transform(values, inverse)。
+
+// FWT/FMT 使用示例（位掩码数组必须等长，且长度是 2 的幂）：
+// vll f{1, -2, 3, 4}, g{5, 6, -7, 8};
+// auto h_or = poly::convolution_fwt_or(f, g, 1'000'000'007);
+// auto h_and = poly::convolution_fwt_and(f, g, 1'000'000'007);
+// auto h_xor = poly::convolution_fwt_xor(
+//     f, g, 1'000'000'007);  // 长度 > 1 时 XOR 逆变换要求奇数模
+// auto h_subset = poly::convolution_subset(f, g, 1'000'000'007);
+//
+// vector<u64> sums{1, 2, 3, 4};
+// poly::subset_zeta_transform(sums, 1'000'000'007);
+// poly::subset_mobius_transform(sums, 1'000'000'007);  // 恢复原数组
+// // 超集版本对应 superset_zeta_transform / superset_mobius_transform。
 
 // 整数 INF 是为加法预留余量的算法哨兵，并不等于类型的真正最大值。
 // 若合法答案可能超过它，或要从 INF 继续运算，应按题目约束另行处理。
