@@ -49,6 +49,98 @@ constexpr bool chmax(T& value, const T& candidate) {
     return false;
 }
 
+// unordered_* 的随机盐哈希：缓解针对固定桶分布构造碰撞的数据。
+// 操作仍然只是期望/均摊 O(1)，最坏 O(n)；单次插入还可能因 rehash 为 O(n)。
+// reserve_hash 可减少扩容和碰撞，但不会改变上述最坏复杂度。
+// 这里按容器元素个数计复杂度；字符串哈希另需 O(|key|)，比较代价另计。
+struct custom_hash {
+   private:
+    static constexpr u64 splitmix64(u64 x) noexcept {
+        x += 0x9e3779b97f4a7c15ULL;
+        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+        return x ^ (x >> 31);
+    }
+
+    static u64 seed() noexcept {
+        static const u64 value = []() noexcept {
+            const u64 now = static_cast<u64>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+            const u64 address = static_cast<u64>(
+                reinterpret_cast<std::uintptr_t>(&now));
+            return splitmix64(now ^ address);
+        }();
+        return value;
+    }
+
+    static u64 mix(u64 value) noexcept {
+        return splitmix64(value + seed());
+    }
+
+    static constexpr u64 combine(u64 first, u64 second) noexcept {
+        return splitmix64(first ^
+                          (second + 0x9e3779b97f4a7c15ULL + (first << 6) +
+                           (first >> 2)));
+    }
+
+   public:
+    template <typename T,
+              std::enable_if_t<(std::is_integral_v<T> || std::is_enum_v<T>) &&
+                                   sizeof(T) <= sizeof(u64),
+                               int> = 0>
+    std::size_t operator()(T value) const noexcept {
+        return static_cast<std::size_t>(mix(static_cast<u64>(value)));
+    }
+
+    // 128 位整数需要同时混合高、低 64 位，不能直接截断。
+    std::size_t operator()(u128 value) const noexcept {
+        const u64 low = static_cast<u64>(value);
+        const u64 high = static_cast<u64>(value >> 64);
+        return static_cast<std::size_t>(combine(mix(low), mix(high)));
+    }
+
+    std::size_t operator()(i128 value) const noexcept {
+        return (*this)(static_cast<u128>(value));
+    }
+
+    // 不在 std::hash<string> 的结果外再套一层，而是带盐混合每个字节，
+    // 避免保留 std::hash<string> 本身的碰撞。
+    std::size_t operator()(std::string_view value) const noexcept {
+        u64 result = splitmix64(
+            seed() ^ (static_cast<u64>(value.size()) +
+                      0x9e3779b97f4a7c15ULL));
+        for (unsigned char byte : value) {
+            result = splitmix64(
+                result ^ (static_cast<u64>(byte) + 0x9e3779b97f4a7c15ULL));
+        }
+        return static_cast<std::size_t>(result);
+    }
+
+    std::size_t operator()(const std::string& value) const noexcept {
+        return (*this)(std::string_view(value.data(), value.size()));
+    }
+
+    template <typename First, typename Second>
+    std::size_t operator()(
+        const std::pair<First, Second>& value) const noexcept {
+        const u64 first = static_cast<u64>((*this)(value.first));
+        const u64 second = static_cast<u64>((*this)(value.second));
+        return static_cast<std::size_t>(combine(first, second));
+    }
+};
+
+template <typename Key>
+using safe_unordered_set = std::unordered_set<Key, custom_hash>;
+
+template <typename Key, typename Value>
+using safe_unordered_map = std::unordered_map<Key, Value, custom_hash>;
+
+template <typename HashTable>
+void reserve_hash(HashTable& table, std::size_t expected_size) {
+    table.max_load_factor(0.7f);  // 必须先设置负载因子，再 reserve。
+    table.reserve(expected_size);
+}
+
 // PBDS 顺序统计树（GCC 扩展，洛谷选择 GNU++17/20 时可用）
 template <typename Key, typename Compare = std::less<Key>>
 using ordered_set =
@@ -449,6 +541,24 @@ auto make_v(size_t n, Args... args) {
 // chmax(best, 200LL);                 // best = 200
 // 注意参数类型必须一致，例如 i64 变量搭配 3LL 或 i64{3}。
 
+// 随机盐哈希使用示例（C++17 查询用 find，不用 C++20 的 contains）：
+// safe_unordered_set<i64> seen;
+// reserve_hash(seen, n);  // 已知最多插入 n 个元素时，先预留容量。
+// seen.insert(x);
+// bool exists = seen.find(x) != seen.end();
+// seen.erase(x);
+//
+// safe_unordered_set<pii> edges;            // pair 可直接作为键
+// safe_unordered_set<string> names;         // string 会逐字节带盐哈希
+// safe_unordered_map<pii, i64> edge_weight; // map 同理
+// unordered_set<i64, custom_hash> raw;      // 也可给标准容器显式传哈希
+//
+// 若整数键严格位于 [0, U)，直接寻址才有最坏情况严格 O(1)：
+// vector<unsigned char> present(U);  // 构造和内存为 O(U)
+// present[x] = 1;                    // 插入
+// bool has_x = present[x] != 0;      // 查询
+// present[x] = 0;                    // 删除
+
 // PBDS 使用示例：
 // ordered_set<int> os;
 // os.insert(10);
@@ -655,6 +765,520 @@ class PrimeComb {
 // comb.C(10, 3);              // 120
 // comb.C(10, 11);             // 0，k > n
 // comb.ensure(200'000);       // 之后可线性增量扩容，不会缩小已有表
+
+// 多项式卷积：浮点 FFT、998244353 NTT、任意正 int 模 MTT、拆系数 FFT。
+// 四种 convolution_* 都允许负输入，空数组返回空数组，结果长度为 n+m-1。
+namespace poly {
+
+using FFTReal = long double;
+using FFTComplex = std::complex<FFTReal>;
+static_assert(std::numeric_limits<FFTReal>::digits >= 64,
+              "FFT templates require an extended-precision long double");
+
+namespace detail {
+
+template <typename T>
+constexpr bool is_coefficient_v =
+    std::is_integral_v<T> && !std::is_same_v<T, bool> &&
+    sizeof(T) <= sizeof(u64);
+
+constexpr std::size_t FFT_SAFE_MAX_LENGTH = std::size_t{1} << 20;
+constexpr u128 FFT_SAFE_INTEGER_BOUND =
+    static_cast<u128>(1'000'000'000'000'000ULL);
+
+template <typename T>
+u64 magnitude(T value) {
+    static_assert(is_coefficient_v<T>);
+    if constexpr (std::is_signed_v<T>) {
+        const i128 wide = static_cast<i128>(value);
+        return static_cast<u64>(wide < 0 ? -wide : wide);
+    } else {
+        return static_cast<u64>(value);
+    }
+}
+
+inline bool exceeds_fft_bound(std::size_t terms, u64 max_a, u64 max_b) {
+    if (max_a == 0 || max_b == 0) return false;
+    const u128 product = static_cast<u128>(max_a) * max_b;
+    return product > FFT_SAFE_INTEGER_BOUND ||
+           static_cast<u128>(terms) > FFT_SAFE_INTEGER_BOUND / product;
+}
+
+inline std::size_t convolution_size(std::size_t a_size, std::size_t b_size) {
+    if (a_size == 0 || b_size == 0) return 0;
+    if (a_size > std::numeric_limits<std::size_t>::max() - b_size + 1) {
+        throw std::length_error("convolution length overflow");
+    }
+    return a_size + b_size - 1;
+}
+
+inline std::size_t transform_size(std::size_t result_size) {
+    if (result_size == 0) return 0;
+    std::size_t size = 1;
+    while (size < result_size) {
+        if (size > std::numeric_limits<std::size_t>::max() / 2) {
+            throw std::length_error("transform length overflow");
+        }
+        size <<= 1;
+    }
+    return size;
+}
+
+template <typename T>
+u64 normalize_mod(T value, u64 modulus) {
+    static_assert(is_coefficient_v<T>,
+                  "polynomial coefficients must be <= 64-bit integers");
+    assert(modulus != 0);
+    if constexpr (std::is_signed_v<T>) {
+        i128 result = static_cast<i128>(value) % static_cast<i128>(modulus);
+        if (result < 0) result += static_cast<i128>(modulus);
+        return static_cast<u64>(result);
+    } else {
+        return static_cast<u64>(value) % modulus;
+    }
+}
+
+inline i64 round_to_i64(FFTReal value) {
+    const FFTReal rounded = std::round(value);
+    const FFTReal lower = static_cast<FFTReal>(std::numeric_limits<i64>::min());
+    const FFTReal upper_exclusive = -lower;
+    if (!std::isfinite(rounded) || rounded < lower ||
+        rounded >= upper_exclusive) {
+        throw std::overflow_error("FFT convolution result does not fit i64");
+    }
+    return static_cast<i64>(rounded);
+}
+
+inline u64 ceil_sqrt(u64 value) {
+    u64 result = static_cast<u64>(std::sqrt(static_cast<FFTReal>(value)));
+    while (static_cast<u128>(result) * result < value) ++result;
+    while (result > 0 &&
+           static_cast<u128>(result - 1) * (result - 1) >= value) {
+        --result;
+    }
+    return result;
+}
+
+}  // namespace detail
+
+// 原地 FFT；inverse=false 为正变换，inverse=true 为逆变换。
+// 空数组是 no-op；非空数组长度必须是 2 的幂。
+// 单位根按层缓存来减少累计漂移，适合竞赛中的单线程调用。
+inline void fft(std::vector<FFTComplex>& values, bool inverse) {
+    const std::size_t size = values.size();
+    if (size == 0) return;
+    if ((size & (size - 1)) != 0) {
+        throw std::invalid_argument("FFT length must be a power of two");
+    }
+
+    if (inverse) {
+        for (FFTComplex& value : values) value = std::conj(value);
+    }
+
+    for (std::size_t i = 1, j = 0; i < size; ++i) {
+        std::size_t bit = size >> 1;
+        while (j & bit) {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j ^= bit;
+        if (i < j) std::swap(values[i], values[j]);
+    }
+
+    static std::vector<FFTComplex> roots{FFTComplex(0, 0), FFTComplex(1, 0)};
+    static const FFTReal pi = std::acos(-1.0L);
+    while (roots.size() < size) {
+        const std::size_t half = roots.size();
+        roots.resize(half << 1);
+        const FFTReal angle = pi / static_cast<FFTReal>(half);
+        const FFTComplex step(std::cos(angle), std::sin(angle));
+        for (std::size_t i = half >> 1; i < half; ++i) {
+            roots[i << 1] = roots[i];
+            roots[(i << 1) | 1] = roots[i] * step;
+        }
+    }
+
+    for (std::size_t half = 1; half < size; half <<= 1) {
+        for (std::size_t left = 0; left < size; left += half << 1) {
+            for (std::size_t i = 0; i < half; ++i) {
+                const FFTComplex even = values[left + i];
+                const FFTComplex odd =
+                    values[left + i + half] * roots[half + i];
+                values[left + i] = even + odd;
+                values[left + i + half] = even - odd;
+            }
+        }
+    }
+
+    if (inverse) {
+        const FFTReal inverse_size = 1 / static_cast<FFTReal>(size);
+        for (FFTComplex& value : values) {
+            value = std::conj(value) * inverse_size;
+        }
+    }
+}
+
+// 普通整数 FFT 卷积。精确结果必须能装入 i64；浮点 FFT 没有绝对精度保证。
+// 为避免极限数据静默舍入错误，要求变换长度 <= 2^20，且
+// min(n,m)*max(abs(a))*max(abs(b)) <= 1e15；否则抛异常。
+template <typename A, typename B>
+std::vector<i64> convolution_fft(const std::vector<A>& a,
+                                 const std::vector<B>& b) {
+    static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
+                  "polynomial coefficients must be <= 64-bit integers");
+    const std::size_t result_size =
+        detail::convolution_size(a.size(), b.size());
+    if (result_size == 0) return {};
+    const std::size_t size = detail::transform_size(result_size);
+    if (size > detail::FFT_SAFE_MAX_LENGTH) {
+        throw std::length_error("FFT length exceeds safe limit");
+    }
+
+    u64 max_a = 0, max_b = 0;
+    for (const A& value : a) {
+        max_a = std::max(max_a, detail::magnitude(value));
+    }
+    for (const B& value : b) {
+        max_b = std::max(max_b, detail::magnitude(value));
+    }
+    if (detail::exceeds_fft_bound(std::min(a.size(), b.size()), max_a, max_b)) {
+        throw std::overflow_error("FFT precision bound exceeded; use NTT/MTT");
+    }
+
+    std::vector<FFTComplex> fa(size), fb(size);
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        fa[i] = static_cast<FFTReal>(a[i]);
+    }
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        fb[i] = static_cast<FFTReal>(b[i]);
+    }
+
+    fft(fa, false);
+    fft(fb, false);
+    for (std::size_t i = 0; i < size; ++i) fa[i] *= fb[i];
+    fft(fa, true);
+
+    std::vector<i64> result(result_size);
+    for (std::size_t i = 0; i < result_size; ++i) {
+        result[i] = detail::round_to_i64(fa[i].real());
+    }
+    return result;
+}
+
+// 泛型 NTT 核。Mod 必须是质数，PrimitiveRoot 必须是其原根，且
+// 2^MaxPower | (Mod-1)。transform 会自动把输入归一化到 [0, Mod)。
+template <std::uint32_t Mod, std::uint32_t PrimitiveRoot, int MaxPower>
+class NTT {
+    static_assert(Mod > 2 && Mod < (std::uint32_t{1} << 31));
+    static_assert(MaxPower > 0 &&
+                  MaxPower < std::numeric_limits<std::size_t>::digits);
+
+   public:
+    static constexpr std::uint32_t modulus = Mod;
+    static constexpr std::size_t max_length = std::size_t{1} << MaxPower;
+    static_assert((static_cast<u64>(Mod) - 1) % max_length == 0);
+
+    static void transform(std::vector<std::uint32_t>& values, bool inverse) {
+        const std::size_t size = values.size();
+        if (size == 0) return;
+        if ((size & (size - 1)) != 0) {
+            throw std::invalid_argument("NTT length must be a power of two");
+        }
+        if (size > max_length) {
+            throw std::length_error("NTT length exceeds modulus capacity");
+        }
+
+        for (std::uint32_t& value : values) {
+            if (value >= Mod) value %= Mod;
+        }
+        for (std::size_t i = 1, j = 0; i < size; ++i) {
+            std::size_t bit = size >> 1;
+            while (j & bit) {
+                j ^= bit;
+                bit >>= 1;
+            }
+            j ^= bit;
+            if (i < j) std::swap(values[i], values[j]);
+        }
+
+        for (std::size_t length = 2; length <= size; length <<= 1) {
+            u64 root = quick_power(
+                PrimitiveRoot,
+                (static_cast<u64>(Mod) - 1) / static_cast<u64>(length), Mod);
+            if (inverse) root = quick_power(root, Mod - 2, Mod);
+            const std::size_t half = length >> 1;
+            for (std::size_t left = 0; left < size; left += length) {
+                u64 power = 1;
+                for (std::size_t i = 0; i < half; ++i) {
+                    const std::uint32_t even = values[left + i];
+                    const std::uint32_t odd = static_cast<std::uint32_t>(
+                        static_cast<u64>(values[left + i + half]) * power %
+                        Mod);
+                    std::uint32_t sum = even + odd;
+                    if (sum >= Mod) sum -= Mod;
+                    const std::uint32_t difference =
+                        even >= odd ? even - odd : even + Mod - odd;
+                    values[left + i] = sum;
+                    values[left + i + half] = difference;
+                    power = power * root % Mod;
+                }
+            }
+            if (length == size) break;
+        }
+
+        if (inverse) {
+            const u64 inverse_size = quick_power(size % Mod, Mod - 2, Mod);
+            for (std::uint32_t& value : values) {
+                value = static_cast<std::uint32_t>(static_cast<u64>(value) *
+                                                   inverse_size % Mod);
+            }
+        }
+    }
+
+    template <typename A, typename B>
+    static std::vector<std::uint32_t> convolution(const std::vector<A>& a,
+                                                  const std::vector<B>& b) {
+        static_assert(
+            detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
+            "polynomial coefficients must be <= 64-bit integers");
+        const std::size_t result_size =
+            detail::convolution_size(a.size(), b.size());
+        if (result_size == 0) return {};
+        const std::size_t size = detail::transform_size(result_size);
+        if (size > max_length) {
+            throw std::length_error("NTT convolution is too long");
+        }
+
+        std::vector<std::uint32_t> fa(size), fb(size);
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            fa[i] =
+                static_cast<std::uint32_t>(detail::normalize_mod(a[i], Mod));
+        }
+        for (std::size_t i = 0; i < b.size(); ++i) {
+            fb[i] =
+                static_cast<std::uint32_t>(detail::normalize_mod(b[i], Mod));
+        }
+        transform(fa, false);
+        transform(fb, false);
+        for (std::size_t i = 0; i < size; ++i) {
+            fa[i] = static_cast<std::uint32_t>(static_cast<u64>(fa[i]) * fb[i] %
+                                               Mod);
+        }
+        transform(fa, true);
+        fa.resize(result_size);
+        return fa;
+    }
+};
+
+using NTT998244353 = NTT<998'244'353U, 3U, 23>;
+
+template <typename A, typename B>
+std::vector<std::uint32_t> convolution_ntt(const std::vector<A>& a,
+                                           const std::vector<B>& b) {
+    return NTT998244353::convolution(a, b);
+}
+
+namespace detail {
+
+constexpr std::uint32_t MTT_P1 = 167'772'161U;
+constexpr std::uint32_t MTT_P2 = 469'762'049U;
+constexpr std::uint32_t MTT_P3 = 1'224'736'769U;
+constexpr std::uint32_t MTT_INV_P1_MOD_P2 = 104'391'568U;
+constexpr std::uint32_t MTT_INV_P1P2_MOD_P3 = 721'017'874U;
+constexpr u64 MTT_P1P2 = static_cast<u64>(MTT_P1) * MTT_P2;
+constexpr u128 MTT_PRODUCT = static_cast<u128>(MTT_P1P2) * MTT_P3;
+constexpr u64 MTT_MAX_MODULUS = 2'147'483'647ULL;
+constexpr std::size_t MTT_MAX_LENGTH = std::size_t{1} << 24;
+
+using MTTN1 = NTT<MTT_P1, 3U, 25>;
+using MTTN2 = NTT<MTT_P2, 3U, 26>;
+using MTTN3 = NTT<MTT_P3, 3U, 24>;
+
+static_assert(static_cast<u64>(MTT_P1) * MTT_INV_P1_MOD_P2 % MTT_P2 == 1);
+static_assert(static_cast<u64>(MTT_P1P2 % MTT_P3) * MTT_INV_P1P2_MOD_P3 %
+                  MTT_P3 ==
+              1);
+static_assert(MTT_PRODUCT > (static_cast<u128>(1) << 23) *
+                                (MTT_MAX_MODULUS - 1) * (MTT_MAX_MODULUS - 1));
+
+inline u128 crt_three(std::uint32_t residue1, std::uint32_t residue2,
+                      std::uint32_t residue3) {
+    u64 step1 =
+        (static_cast<u64>(residue2) + MTT_P2 - residue1 % MTT_P2) % MTT_P2;
+    step1 = step1 * MTT_INV_P1_MOD_P2 % MTT_P2;
+    const u64 value12 =
+        static_cast<u64>(residue1) + static_cast<u64>(MTT_P1) * step1;
+
+    u64 step2 =
+        (static_cast<u64>(residue3) + MTT_P3 - value12 % MTT_P3) % MTT_P3;
+    step2 = step2 * MTT_INV_P1P2_MOD_P3 % MTT_P3;
+    return static_cast<u128>(value12) + static_cast<u128>(MTT_P1P2) * step2;
+}
+
+}  // namespace detail
+
+// MTT：三组 NTT + CRT，对任意 1 <= modulus <= INT_MAX（不要求质数）
+// 精确计算模卷积。公共代数长度上限 2^24；跑满约需 300 MiB 以上内存。
+// CRT 全程使用 u128。
+template <typename A, typename B>
+std::vector<std::uint32_t> convolution_mtt(const std::vector<A>& a,
+                                           const std::vector<B>& b,
+                                           i64 modulus) {
+    static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
+                  "polynomial coefficients must be <= 64-bit integers");
+    if (modulus <= 0 || static_cast<u64>(modulus) > detail::MTT_MAX_MODULUS) {
+        throw std::invalid_argument("MTT requires 1 <= modulus <= INT_MAX");
+    }
+    const std::size_t result_size =
+        detail::convolution_size(a.size(), b.size());
+    if (result_size == 0) return {};
+    if (modulus == 1) return std::vector<std::uint32_t>(result_size, 0);
+    const std::size_t size = detail::transform_size(result_size);
+    if (size > detail::MTT_MAX_LENGTH) {
+        throw std::length_error("MTT convolution length exceeds 2^24");
+    }
+
+    const u64 mod = static_cast<u64>(modulus);
+    std::vector<std::uint32_t> normalized_a(a.size());
+    std::vector<std::uint32_t> normalized_b(b.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        normalized_a[i] =
+            static_cast<std::uint32_t>(detail::normalize_mod(a[i], mod));
+    }
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        normalized_b[i] =
+            static_cast<std::uint32_t>(detail::normalize_mod(b[i], mod));
+    }
+
+    const auto residue1 =
+        detail::MTTN1::convolution(normalized_a, normalized_b);
+    const auto residue2 =
+        detail::MTTN2::convolution(normalized_a, normalized_b);
+    const auto residue3 =
+        detail::MTTN3::convolution(normalized_a, normalized_b);
+
+    std::vector<std::uint32_t> result(result_size);
+    for (std::size_t i = 0; i < result_size; ++i) {
+        result[i] = static_cast<std::uint32_t>(
+            detail::crt_three(residue1[i], residue2[i], residue3[i]) % mod);
+    }
+    return result;
+}
+
+// 拆系数 FFT：令 B=ceil(sqrt(modulus))，把 x 拆成 low+B*high。
+// 支持任意 1 <= modulus <= INT_MAX（不要求质数），但仍是浮点算法。
+// 为控制误差，限制变换长度 <= 2^20，且三个子卷积的粗界 <= 1e15；
+// 超出时抛异常，请改用精确的 convolution_mtt。
+template <typename A, typename B>
+std::vector<std::uint32_t> convolution_split_fft(const std::vector<A>& a,
+                                                 const std::vector<B>& b,
+                                                 i64 modulus) {
+    static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
+                  "polynomial coefficients must be <= 64-bit integers");
+    if (modulus <= 0 || static_cast<u64>(modulus) > detail::MTT_MAX_MODULUS) {
+        throw std::invalid_argument(
+            "split FFT requires 1 <= modulus <= INT_MAX");
+    }
+    const std::size_t result_size =
+        detail::convolution_size(a.size(), b.size());
+    if (result_size == 0) return {};
+    if (modulus == 1) return std::vector<std::uint32_t>(result_size, 0);
+    const std::size_t size = detail::transform_size(result_size);
+    if (size > detail::FFT_SAFE_MAX_LENGTH) {
+        throw std::length_error("split FFT length exceeds safe limit; use MTT");
+    }
+
+    const u64 mod = static_cast<u64>(modulus);
+    const u64 base = detail::ceil_sqrt(mod);
+    u64 max_a_low = 0, max_a_high = 0;
+    u64 max_b_low = 0, max_b_high = 0;
+    std::vector<FFTComplex> fa(size), fb(size);
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const u64 value = detail::normalize_mod(a[i], mod);
+        const u64 low = value % base;
+        const u64 high = value / base;
+        max_a_low = std::max(max_a_low, low);
+        max_a_high = std::max(max_a_high, high);
+        fa[i] =
+            FFTComplex(static_cast<FFTReal>(low), static_cast<FFTReal>(high));
+    }
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        const u64 value = detail::normalize_mod(b[i], mod);
+        const u64 low = value % base;
+        const u64 high = value / base;
+        max_b_low = std::max(max_b_low, low);
+        max_b_high = std::max(max_b_high, high);
+        fb[i] =
+            FFTComplex(static_cast<FFTReal>(low), static_cast<FFTReal>(high));
+    }
+
+    const u128 terms = static_cast<u128>(std::min(a.size(), b.size()));
+    const u128 bound_low = terms * max_a_low * max_b_low;
+    const u128 bound_high = terms * max_a_high * max_b_high;
+    const u128 bound_cross =
+        terms * (static_cast<u128>(max_a_low) * max_b_high +
+                 static_cast<u128>(max_a_high) * max_b_low);
+    if (bound_low > detail::FFT_SAFE_INTEGER_BOUND ||
+        bound_high > detail::FFT_SAFE_INTEGER_BOUND ||
+        bound_cross > detail::FFT_SAFE_INTEGER_BOUND) {
+        throw std::overflow_error(
+            "split FFT precision bound exceeded; use MTT");
+    }
+
+    fft(fa, false);
+    fft(fb, false);
+    const FFTComplex minus_half_i(0, -0.5L);
+    const FFTComplex plus_i(0, 1);
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t mirror = (size - i) & (size - 1);
+        if (i > mirror) continue;
+
+        const FFTComplex a_low = (fa[i] + std::conj(fa[mirror])) * 0.5L;
+        const FFTComplex a_high =
+            (fa[i] - std::conj(fa[mirror])) * minus_half_i;
+        const FFTComplex b_low = (fb[i] + std::conj(fb[mirror])) * 0.5L;
+        const FFTComplex b_high =
+            (fb[i] - std::conj(fb[mirror])) * minus_half_i;
+        const FFTComplex low_product = a_low * b_low;
+        const FFTComplex high_product = a_high * b_high;
+        const FFTComplex cross_product = a_low * b_high + a_high * b_low;
+
+        fa[i] = low_product + plus_i * high_product;
+        fb[i] = cross_product;
+        if (i != mirror) {
+            fa[mirror] =
+                std::conj(low_product) + plus_i * std::conj(high_product);
+            fb[mirror] = std::conj(cross_product);
+        }
+    }
+    fft(fa, true);
+    fft(fb, true);
+
+    std::vector<std::uint32_t> result(result_size);
+    for (std::size_t i = 0; i < result_size; ++i) {
+        const i64 low = detail::round_to_i64(fa[i].real());
+        const i64 high = detail::round_to_i64(fa[i].imag());
+        const i64 cross = detail::round_to_i64(fb[i].real());
+        i128 value = static_cast<i128>(low) + static_cast<i128>(cross) * base +
+                     static_cast<i128>(high) * base * base;
+        value %= static_cast<i128>(mod);
+        if (value < 0) value += static_cast<i128>(mod);
+        result[i] = static_cast<std::uint32_t>(value);
+    }
+    return result;
+}
+
+}  // namespace poly
+
+// 卷积使用示例：
+// vll a{1, -2, 3}, b{4, 5};
+// auto c1 = poly::convolution_fft(a, b);                 // 普通整数卷积
+// auto c2 = poly::convolution_ntt(a, b);                 // 模 998244353
+// auto c3 = poly::convolution_mtt(a, b, 1'000'000'007); // 任意正 int 模
+// auto c4 = poly::convolution_split_fft(
+//     a, b, 1'000'000'007);  // 浮点拆系数；超界时改用 MTT
+// // 需要单独做变换时：poly::fft(values, inverse)，或
+// // poly::NTT998244353::transform(values, inverse)。
 
 // 整数 INF 是为加法预留余量的算法哨兵，并不等于类型的真正最大值。
 // 若合法答案可能超过它，或要从 INF 继续运算，应按题目约束另行处理。
