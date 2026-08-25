@@ -52,7 +52,8 @@ let topLevelHeadingIndex = 0;
                     <a
                         href={`#${heading.slug}`}
                         class="px-2 flex gap-2 relative transition w-full min-h-9 rounded-xl
-                            hover:bg-[var(--toc-btn-hover)] active:bg-[var(--toc-btn-active)] py-2"
+                            hover:bg-[var(--toc-btn-hover)] active:bg-[var(--toc-btn-active)] py-2
+                            focus-visible:outline-2 focus-visible:outline-[var(--primary)] focus-visible:outline-offset-[-2px]"
                     >
                         <div
                             class:list={[
@@ -90,7 +91,7 @@ let topLevelHeadingIndex = 0;
             })}
 
             <div
-                id="active-indicator"
+                data-active-indicator
                 style="opacity: 0"
                 class:list={[
                     { hidden: headings.length === 0 },

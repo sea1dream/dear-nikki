@@ -1,0 +1,308 @@
+---
+import type { MarkdownHeading } from "astro";
+import { Icon } from "astro-icon/components";
+import TOC from "./TOC.astro";
+
+interface Props {
+    headings?: MarkdownHeading[];
+}
+
+const { headings = [] } = Astro.props as Props;
+const hasHeadings = headings.length > 0;
+---
+
+{
+    hasHeadings && (
+        <post-toc-panel id="toc-wrapper" data-open="false">
+            <button
+                type="button"
+                class="toc-toggle btn-card"
+                data-toc-toggle
+                aria-label="打开文章目录"
+                aria-controls="post-toc-panel"
+                aria-expanded="false"
+                title="文章目录"
+            >
+                <Icon name="material-symbols:format-list-bulleted-rounded" />
+            </button>
+
+            <div class="toc-backdrop" data-toc-backdrop aria-hidden="true" />
+
+            <aside
+                id="post-toc-panel"
+                class="toc-panel card-base"
+                data-toc-panel
+                aria-label="文章目录"
+                aria-hidden="true"
+            >
+                <div class="toc-header">
+                    <Icon
+                        name="material-symbols:format-list-bulleted-rounded"
+                        class="toc-header-icon"
+                    />
+                    <div class="toc-title">文章目录</div>
+                    <button
+                        type="button"
+                        class="toc-close btn-plain"
+                        data-toc-close
+                        aria-label="关闭文章目录"
+                        title="关闭"
+                    >
+                        <Icon name="material-symbols:close-rounded" />
+                    </button>
+                </div>
+
+                <div
+                    id="toc-inner-wrapper"
+                    class="hide-scrollbar"
+                    data-toc-scroll
+                    data-lenis-prevent
+                >
+                    <div class="toc-spacer" />
+                    <TOC headings={headings} />
+                    <div class="toc-spacer" />
+                </div>
+            </aside>
+        </post-toc-panel>
+    )
+}
+
+<style lang="stylus">
+post-toc-panel
+    pointer-events: none
+
+.toc-toggle
+    position: fixed
+    z-index: 45
+    top: 6rem
+    right: 1rem
+    width: 44px
+    height: 44px
+    display: flex
+    align-items: center
+    justify-content: center
+    border-radius: .5rem
+    color: var(--primary)
+    pointer-events: auto
+    box-shadow: 0 .5rem 1.5rem rgba(0, 0, 0, .18)
+    transition: opacity .15s ease, transform .15s ease
+    svg
+        font-size: 1.5rem
+
+.toc-backdrop
+    position: fixed
+    z-index: 43
+    inset: 0
+    background: rgba(0, 0, 0, .32)
+    opacity: 0
+    visibility: hidden
+    transition: opacity .2s ease, visibility .2s ease
+
+.toc-panel
+    position: fixed
+    z-index: 44
+    top: 5.5rem
+    right: 1rem
+    bottom: 1rem
+    width: calc(100vw - 2rem)
+    max-width: 20rem
+    display: flex
+    flex-direction: column
+    overflow: hidden
+    opacity: 0
+    pointer-events: none
+    transform: translateX(calc(100% + 2rem))
+    transition: transform .25s ease, opacity .2s ease
+
+.toc-header
+    min-height: 3.5rem
+    padding: 0 .75rem 0 1rem
+    display: flex
+    align-items: center
+    gap: .625rem
+    border-bottom: 1px solid var(--line-divider)
+
+.toc-header-icon
+    flex: 0 0 auto
+    color: var(--primary)
+    font-size: 1.25rem
+
+.toc-title
+    min-width: 0
+    flex: 1
+    color: var(--primary)
+    font-size: 1rem
+    font-weight: 700
+
+.toc-close
+    width: 44px
+    height: 44px
+    display: flex
+    align-items: center
+    justify-content: center
+    border-radius: .5rem
+    svg
+        font-size: 1.25rem
+
+#toc-inner-wrapper
+    flex: 1
+    min-height: 0
+    overflow-x: hidden
+    overflow-y: auto
+    overscroll-behavior-y: contain
+    touch-action: pan-y
+    -webkit-overflow-scrolling: touch
+    padding: 0 .5rem
+
+.toc-spacer
+    height: 2rem
+
+post-toc-panel[data-open="true"]
+    .toc-toggle
+        opacity: 0
+        pointer-events: none
+        transform: scale(.9)
+
+    .toc-panel
+        opacity: 1
+        pointer-events: auto
+        transform: translateX(0)
+
+    .toc-backdrop
+        opacity: 1
+        visibility: visible
+        pointer-events: auto
+
+@media (min-width: 1536px)
+    .toc-toggle, .toc-backdrop, .toc-close
+        display: none
+
+    .toc-panel
+        top: 3.5rem
+        right: 1rem
+        bottom: auto
+        left: auto
+        width: calc(var(--toc-width) - 1rem)
+        height: calc(100vh - 20rem)
+        min-height: 16rem
+        border-radius: .5rem
+        opacity: 1
+        pointer-events: auto
+        transform: none
+
+    .toc-header
+        padding-left: .5rem
+
+    #toc-inner-wrapper
+        padding: 0
+
+@media (prefers-reduced-motion: reduce)
+    .toc-panel, .toc-backdrop
+        transition: none
+</style>
+
+<script>
+    import { getLenis } from "@lib/browser/lenis";
+
+    class PostTocPanel extends HTMLElement {
+        private toggleButton: HTMLButtonElement | null = null;
+        private closeButton: HTMLButtonElement | null = null;
+        private panel: HTMLElement | null = null;
+        private backdrop: HTMLElement | null = null;
+        private wideViewport = window.matchMedia("(min-width: 1536px)");
+
+        connectedCallback() {
+            this.toggleButton = this.querySelector("[data-toc-toggle]");
+            this.closeButton = this.querySelector("[data-toc-close]");
+            this.panel = this.querySelector("[data-toc-panel]");
+            this.backdrop = this.querySelector("[data-toc-backdrop]");
+
+            this.toggleButton?.addEventListener("click", this.toggle);
+            this.closeButton?.addEventListener("click", this.close);
+            this.backdrop?.addEventListener("click", this.close);
+            this.addEventListener("click", this.handleAnchorClick);
+            document.addEventListener("keydown", this.handleKeydown);
+            this.wideViewport.addEventListener("change", this.syncState);
+            this.syncState();
+        }
+
+        disconnectedCallback() {
+            this.toggleButton?.removeEventListener("click", this.toggle);
+            this.closeButton?.removeEventListener("click", this.close);
+            this.backdrop?.removeEventListener("click", this.close);
+            this.removeEventListener("click", this.handleAnchorClick);
+            document.removeEventListener("keydown", this.handleKeydown);
+            this.wideViewport.removeEventListener("change", this.syncState);
+            document.documentElement.classList.remove("post-toc-open");
+            getLenis()?.start();
+        }
+
+        private isOpen() {
+            return this.dataset.open === "true";
+        }
+
+        private setOpen(open: boolean, restoreFocus = false) {
+            this.dataset.open = String(open);
+            this.toggleButton?.setAttribute("aria-expanded", String(open));
+
+            const isWide = this.wideViewport.matches;
+            this.panel?.setAttribute("aria-hidden", String(!open && !isWide));
+            if (this.panel) this.panel.inert = !open && !isWide;
+
+            document.documentElement.classList.toggle(
+                "post-toc-open",
+                open && !isWide,
+            );
+
+            if (open && !isWide) {
+                getLenis()?.stop();
+            } else {
+                getLenis()?.start();
+            }
+
+            if (open && !isWide) {
+                this.closeButton?.focus({ preventScroll: true });
+            } else if (restoreFocus) {
+                this.toggleButton?.focus({ preventScroll: true });
+            }
+        }
+
+        private toggle = () => {
+            this.setOpen(!this.isOpen(), this.isOpen());
+        };
+
+        private close = () => {
+            if (!this.isOpen()) return;
+            this.setOpen(false, true);
+        };
+
+        private handleAnchorClick = (event: Event) => {
+            const target = event.target;
+            if (
+                !this.wideViewport.matches &&
+                target instanceof Element &&
+                target.closest("a[href^='#']")
+            ) {
+                this.setOpen(false);
+            }
+        };
+
+        private handleKeydown = (event: KeyboardEvent) => {
+            if (event.key === "Escape" && this.isOpen()) this.close();
+        };
+
+        private syncState = () => {
+            this.setOpen(this.wideViewport.matches ? false : this.isOpen());
+        };
+    }
+
+    if (!customElements.get("post-toc-panel")) {
+        customElements.define("post-toc-panel", PostTocPanel);
+    }
+</script>
+
+<style is:global>
+    html.post-toc-open {
+        overflow: hidden;
+    }
+</style>

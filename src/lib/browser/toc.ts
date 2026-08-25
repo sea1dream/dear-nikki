@@ -84,6 +84,11 @@ class TableOfContents extends HTMLElement {
                 this.visibleClass,
                 this.active[i],
             );
+            if (this.active[i]) {
+                this.tocEntries[i].setAttribute("aria-current", "location");
+            } else {
+                this.tocEntries[i].removeAttribute("aria-current");
+            }
         }
 
         if (
@@ -119,6 +124,12 @@ class TableOfContents extends HTMLElement {
         const topmost = activeEntries[0];
         const bottommost = activeEntries[activeEntries.length - 1];
         const tocHeight = this.tocEl.clientHeight;
+        const tocRect = this.tocEl.getBoundingClientRect();
+        const scrollOffset = this.tocEl.scrollTop;
+        const topmostOffset =
+            topmost.getBoundingClientRect().top - tocRect.top + scrollOffset;
+        const bottommostOffset =
+            bottommost.getBoundingClientRect().top - tocRect.top + scrollOffset;
 
         let top: number;
         const visibleSpan =
@@ -126,10 +137,12 @@ class TableOfContents extends HTMLElement {
             topmost.getBoundingClientRect().top;
 
         if (visibleSpan < 0.9 * tocHeight) {
-            top = topmost.offsetTop - 32;
+            top = topmostOffset - 32;
         } else {
-            top = bottommost.offsetTop - tocHeight * 0.8;
+            top = bottommostOffset - tocHeight * 0.8;
         }
+
+        top = Math.max(0, Math.min(top, this.tocEl.scrollHeight - tocHeight));
 
         this.tocEl.scrollTo({
             top,
@@ -207,18 +220,20 @@ class TableOfContents extends HTMLElement {
     }
 
     init() {
-        this.tocEl = document.getElementById("toc-inner-wrapper");
+        this.tocEl = this.closest<HTMLElement>("[data-toc-scroll]");
 
         if (!this.tocEl) return;
 
-        this.tocEl.addEventListener("click", this.handleAnchorClick, {
+        this.addEventListener("click", this.handleAnchorClick, {
             capture: true,
         });
 
-        this.activeIndicator = document.getElementById("active-indicator");
+        this.activeIndicator = this.querySelector<HTMLElement>(
+            "[data-active-indicator]",
+        );
 
         this.tocEntries = Array.from(
-            document.querySelectorAll<HTMLAnchorElement>("#toc a[href^='#']"),
+            this.querySelectorAll<HTMLAnchorElement>("a[href^='#']"),
         );
 
         if (!this.tocEntries.length) return;
@@ -258,7 +273,7 @@ class TableOfContents extends HTMLElement {
             this.observer.unobserve(section);
         });
         this.observer.disconnect();
-        this.tocEl?.removeEventListener("click", this.handleAnchorClick);
+        this.removeEventListener("click", this.handleAnchorClick);
     }
 }
 

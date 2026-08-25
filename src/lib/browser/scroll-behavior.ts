@@ -9,11 +9,10 @@ import { getLenis } from "./lenis";
 const bannerEnabled = !!document.getElementById("banner-wrapper");
 
 /**
- * Handle scroll events for back-to-top button, TOC, and navbar visibility
+ * Handle scroll events for the back-to-top button and navbar visibility.
  */
 function scrollFunction() {
     const backToTopBtn = document.getElementById("back-to-top-btn");
-    const toc = document.getElementById("toc-wrapper");
     const navbar = document.getElementById("navbar-wrapper");
 
     const bannerHeight = window.innerHeight * (BANNER_HEIGHT / 100);
@@ -26,17 +25,6 @@ function scrollFunction() {
             backToTopBtn.classList.remove("hide");
         } else {
             backToTopBtn.classList.add("hide");
-        }
-    }
-
-    if (bannerEnabled && toc) {
-        if (
-            document.body.scrollTop > bannerHeight ||
-            document.documentElement.scrollTop > bannerHeight
-        ) {
-            toc.classList.remove("toc-hide");
-        } else {
-            toc.classList.add("toc-hide");
         }
     }
 
