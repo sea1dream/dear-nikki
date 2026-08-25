@@ -1220,6 +1220,1011 @@ inline Table second_table(size_t n, i64 modulus) {
 // auto all_second = stirling::second_table(1000, 1'000'000'007);
 // stirling::get(all_second, 1000, 20);  // S(1000,20)
 
+// 稠密矩阵、模矩阵运算、快速幂、行列式、高斯消元、矩阵树和热带半环。
+namespace matrix {
+
+// 保留行列数，因此可以准确表示 0*n、n*0 和 0*0 矩阵。
+template <typename T>
+class DenseMatrix {
+    static_assert(!std::is_same_v<std::remove_cv_t<T>, bool>,
+                  "DenseMatrix<bool> is not supported");
+
+   public:
+    using value_type = T;
+
+    // 行视图允许修改元素，但不暴露 resize/clear，因而不会破坏矩阵形状。
+    class RowView {
+       public:
+        explicit RowView(vector<T>& row) noexcept : row_(&row) {}
+        RowView(const RowView&) noexcept = default;
+        RowView& operator=(const RowView&) = delete;
+
+        typename vector<T>::reference operator[](size_t column) const noexcept {
+            return (*row_)[column];
+        }
+        typename vector<T>::reference at(size_t column) const {
+            return row_->at(column);
+        }
+        typename vector<T>::iterator begin() const noexcept {
+            return row_->begin();
+        }
+        typename vector<T>::iterator end() const noexcept {
+            return row_->end();
+        }
+        size_t size() const noexcept { return row_->size(); }
+
+       private:
+        vector<T>* row_;
+    };
+
+    class ConstRowView {
+       public:
+        explicit ConstRowView(const vector<T>& row) noexcept : row_(&row) {}
+        ConstRowView(const ConstRowView&) noexcept = default;
+        ConstRowView& operator=(const ConstRowView&) = delete;
+
+        typename vector<T>::const_reference operator[](
+            size_t column) const noexcept {
+            return (*row_)[column];
+        }
+        typename vector<T>::const_reference at(size_t column) const {
+            return row_->at(column);
+        }
+        typename vector<T>::const_iterator begin() const noexcept {
+            return row_->begin();
+        }
+        typename vector<T>::const_iterator end() const noexcept {
+            return row_->end();
+        }
+        size_t size() const noexcept { return row_->size(); }
+
+       private:
+        const vector<T>* row_;
+    };
+
+    DenseMatrix() = default;
+
+    DenseMatrix(size_t rows, size_t columns, const T& value = T{})
+        : rows_(rows), columns_(columns), data_(rows) {
+        for (auto& row : data_) row.assign(columns_, value);
+    }
+
+    explicit DenseMatrix(vector<vector<T>> values)
+        : rows_(values.size()),
+          columns_(values.empty() ? 0 : values.front().size()) {
+        for (const auto& row : values) {
+            if (row.size() != columns_) {
+                throw std::invalid_argument(
+                    "DenseMatrix rows must have equal length");
+            }
+        }
+        data_ = std::move(values);
+    }
+
+    DenseMatrix(std::initializer_list<std::initializer_list<T>> values)
+        : rows_(values.size()),
+          columns_(values.size() == 0 ? 0 : values.begin()->size()) {
+        data_.reserve(rows_);
+        for (const auto& row : values) {
+            if (row.size() != columns_) {
+                throw std::invalid_argument(
+                    "DenseMatrix rows must have equal length");
+            }
+            data_.emplace_back(row);
+        }
+    }
+
+    size_t rows() const noexcept { return rows_; }
+    size_t columns() const noexcept { return columns_; }
+    bool empty() const noexcept { return rows_ == 0 || columns_ == 0; }
+
+    RowView operator[](size_t row) noexcept { return RowView(data_[row]); }
+    ConstRowView operator[](size_t row) const noexcept {
+        return ConstRowView(data_[row]);
+    }
+
+    typename vector<T>::reference at(size_t row, size_t column) {
+        return data_.at(row).at(column);
+    }
+    typename vector<T>::const_reference at(size_t row, size_t column) const {
+        return data_.at(row).at(column);
+    }
+
+    const vector<vector<T>>& data() const noexcept { return data_; }
+
+    void swap_rows(size_t first, size_t second) {
+        if (first >= rows_ || second >= rows_) {
+            throw std::out_of_range("matrix row is out of range");
+        }
+        data_[first].swap(data_[second]);
+    }
+
+    friend bool operator==(const DenseMatrix& left, const DenseMatrix& right) {
+        return left.rows_ == right.rows_ && left.columns_ == right.columns_ &&
+               left.data_ == right.data_;
+    }
+
+    friend bool operator!=(const DenseMatrix& left, const DenseMatrix& right) {
+        return !(left == right);
+    }
+
+   private:
+    size_t rows_ = 0;
+    size_t columns_ = 0;
+    vector<vector<T>> data_;
+};
+
+namespace detail {
+
+template <typename T>
+inline void require_same_shape(const DenseMatrix<T>& left,
+                               const DenseMatrix<T>& right) {
+    if (left.rows() != right.rows() || left.columns() != right.columns()) {
+        throw std::invalid_argument("matrix dimensions do not match");
+    }
+}
+
+template <typename Left, typename Right>
+inline void require_multipliable(const DenseMatrix<Left>& left,
+                                 const DenseMatrix<Right>& right) {
+    if (left.columns() != right.rows()) {
+        throw std::invalid_argument(
+            "matrix multiplication dimensions do not match");
+    }
+}
+
+template <typename T>
+inline void require_square(const DenseMatrix<T>& value) {
+    if (value.rows() != value.columns()) {
+        throw std::invalid_argument("matrix must be square");
+    }
+}
+
+inline void require_modulus(u64 modulus) {
+    if (modulus == 0) {
+        throw std::invalid_argument("matrix modulus must be non-zero");
+    }
+}
+
+inline void require_prime_modulus(u64 modulus) {
+    if (!::miller_rabin(modulus)) {
+        throw std::invalid_argument("matrix modulus must be prime");
+    }
+}
+
+template <typename Exponent>
+constexpr u64 checked_exponent(Exponent exponent) {
+    using Value = std::remove_cv_t<Exponent>;
+    static_assert(std::is_integral_v<Value> && !std::is_same_v<Value, bool> &&
+                  sizeof(Value) <= sizeof(u64));
+    if constexpr (std::is_signed_v<Value>) {
+        if (exponent < 0) {
+            throw std::invalid_argument("matrix exponent must be non-negative");
+        }
+    }
+    return static_cast<u64>(exponent);
+}
+
+constexpr u64 normalize_mod_value(u64 value, u64 modulus) noexcept {
+    assert(modulus != 0);
+    return value % modulus;
+}
+
+constexpr u64 normalize_mod_value(i64 value, u64 modulus) noexcept {
+    assert(modulus != 0);
+    i128 result = static_cast<i128>(value) % static_cast<i128>(modulus);
+    if (result < 0) result += static_cast<i128>(modulus);
+    return static_cast<u64>(result);
+}
+
+constexpr u64 add_mod(u64 left, u64 right, u64 modulus) noexcept {
+    assert(left < modulus && right < modulus);
+    return left >= modulus - right ? left - (modulus - right) : left + right;
+}
+
+constexpr u64 sub_mod(u64 left, u64 right, u64 modulus) noexcept {
+    assert(left < modulus && right < modulus);
+    return left >= right ? left - right : modulus - (right - left);
+}
+
+}  // namespace detail
+
+template <typename T>
+DenseMatrix<T> identity(size_t size) {
+    DenseMatrix<T> result(size, size);
+    for (size_t i = 0; i < size; ++i) result[i][i] = T{1};
+    return result;
+}
+
+template <typename T>
+DenseMatrix<T> transpose(const DenseMatrix<T>& value) {
+    DenseMatrix<T> result(value.columns(), value.rows());
+    for (size_t row = 0; row < value.rows(); ++row) {
+        for (size_t column = 0; column < value.columns(); ++column) {
+            result[column][row] = value[row][column];
+        }
+    }
+    return result;
+}
+
+// 普通运算直接使用 T 的 +、-、*；整数是否溢出由题目数据范围保证。
+template <typename T>
+DenseMatrix<T> add(const DenseMatrix<T>& left, const DenseMatrix<T>& right) {
+    detail::require_same_shape(left, right);
+    DenseMatrix<T> result(left.rows(), left.columns());
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t column = 0; column < left.columns(); ++column) {
+            result[row][column] = left[row][column] + right[row][column];
+        }
+    }
+    return result;
+}
+
+template <typename T>
+DenseMatrix<T> subtract(const DenseMatrix<T>& left,
+                        const DenseMatrix<T>& right) {
+    detail::require_same_shape(left, right);
+    DenseMatrix<T> result(left.rows(), left.columns());
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t column = 0; column < left.columns(); ++column) {
+            result[row][column] = left[row][column] - right[row][column];
+        }
+    }
+    return result;
+}
+
+template <typename T>
+DenseMatrix<T> multiply(const DenseMatrix<T>& left,
+                        const DenseMatrix<T>& right) {
+    detail::require_multipliable(left, right);
+    DenseMatrix<T> result(left.rows(), right.columns());
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t middle = 0; middle < left.columns(); ++middle) {
+            for (size_t column = 0; column < right.columns(); ++column) {
+                result[row][column] = result[row][column] +
+                                      left[row][middle] * right[middle][column];
+            }
+        }
+    }
+    return result;
+}
+
+template <typename T>
+vector<T> multiply_vector(const DenseMatrix<T>& left, const vector<T>& right) {
+    if (left.columns() != right.size()) {
+        throw std::invalid_argument("matrix-vector dimensions do not match");
+    }
+    vector<T> result(left.rows());
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t column = 0; column < left.columns(); ++column) {
+            result[row] = result[row] + left[row][column] * right[column];
+        }
+    }
+    return result;
+}
+
+template <
+    typename T, typename Exponent,
+    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
+                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
+                         (sizeof(Exponent) <= sizeof(u64)),
+                     int> = 0>
+DenseMatrix<T> power(DenseMatrix<T> base, Exponent exponent) {
+    detail::require_square(base);
+    u64 remaining = detail::checked_exponent(exponent);
+    DenseMatrix<T> result = identity<T>(base.rows());
+    while (remaining > 0) {
+        if (remaining & 1) result = multiply(result, base);
+        remaining >>= 1;
+        if (remaining > 0) base = multiply(base, base);
+    }
+    return result;
+}
+
+inline DenseMatrix<u64> normalize_mod_matrix(DenseMatrix<u64> value,
+                                             u64 modulus) {
+    detail::require_modulus(modulus);
+    for (size_t row = 0; row < value.rows(); ++row) {
+        for (size_t column = 0; column < value.columns(); ++column) {
+            value[row][column] %= modulus;
+        }
+    }
+    return value;
+}
+
+inline DenseMatrix<u64> normalize_mod_matrix(const DenseMatrix<i64>& value,
+                                             u64 modulus) {
+    detail::require_modulus(modulus);
+    DenseMatrix<u64> result(value.rows(), value.columns());
+    for (size_t row = 0; row < value.rows(); ++row) {
+        for (size_t column = 0; column < value.columns(); ++column) {
+            result[row][column] =
+                detail::normalize_mod_value(value[row][column], modulus);
+        }
+    }
+    return result;
+}
+
+inline DenseMatrix<u64> identity_mod(size_t size, u64 modulus) {
+    detail::require_modulus(modulus);
+    DenseMatrix<u64> result(size, size);
+    for (size_t i = 0; i < size; ++i) result[i][i] = 1 % modulus;
+    return result;
+}
+
+inline DenseMatrix<u64> add_mod(const DenseMatrix<u64>& left,
+                                const DenseMatrix<u64>& right, u64 modulus) {
+    detail::require_modulus(modulus);
+    detail::require_same_shape(left, right);
+    DenseMatrix<u64> result(left.rows(), left.columns());
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t column = 0; column < left.columns(); ++column) {
+            const u64 a = left[row][column] % modulus;
+            const u64 b = right[row][column] % modulus;
+            result[row][column] = detail::add_mod(a, b, modulus);
+        }
+    }
+    return result;
+}
+
+inline DenseMatrix<u64> subtract_mod(const DenseMatrix<u64>& left,
+                                     const DenseMatrix<u64>& right,
+                                     u64 modulus) {
+    detail::require_modulus(modulus);
+    detail::require_same_shape(left, right);
+    DenseMatrix<u64> result(left.rows(), left.columns());
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t column = 0; column < left.columns(); ++column) {
+            const u64 a = left[row][column] % modulus;
+            const u64 b = right[row][column] % modulus;
+            result[row][column] = detail::sub_mod(a, b, modulus);
+        }
+    }
+    return result;
+}
+
+// 使用全局 u128 模乘，支持完整非零 u64 模数。
+inline DenseMatrix<u64> multiply_mod(const DenseMatrix<u64>& left,
+                                     const DenseMatrix<u64>& right,
+                                     u64 modulus) {
+    detail::require_modulus(modulus);
+    detail::require_multipliable(left, right);
+    DenseMatrix<u64> result(left.rows(), right.columns());
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t middle = 0; middle < left.columns(); ++middle) {
+            const u64 a = left[row][middle] % modulus;
+            if (a == 0) continue;
+            for (size_t column = 0; column < right.columns(); ++column) {
+                const u64 b = right[middle][column] % modulus;
+                const u64 product = ::mul_mod(a, b, modulus);
+                result[row][column] =
+                    detail::add_mod(result[row][column], product, modulus);
+            }
+        }
+    }
+    return result;
+}
+
+inline vector<u64> multiply_vector_mod(const DenseMatrix<u64>& left,
+                                       const vector<u64>& right, u64 modulus) {
+    detail::require_modulus(modulus);
+    if (left.columns() != right.size()) {
+        throw std::invalid_argument("matrix-vector dimensions do not match");
+    }
+    vector<u64> result(left.rows());
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t column = 0; column < left.columns(); ++column) {
+            const u64 product = ::mul_mod(left[row][column] % modulus,
+                                          right[column] % modulus, modulus);
+            result[row] = detail::add_mod(result[row], product, modulus);
+        }
+    }
+    return result;
+}
+
+template <
+    typename Exponent,
+    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
+                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
+                         (sizeof(Exponent) <= sizeof(u64)),
+                     int> = 0>
+DenseMatrix<u64> power_mod(DenseMatrix<u64> base, Exponent exponent,
+                           u64 modulus) {
+    detail::require_modulus(modulus);
+    detail::require_square(base);
+    u64 remaining = detail::checked_exponent(exponent);
+    base = normalize_mod_matrix(std::move(base), modulus);
+    DenseMatrix<u64> result = identity_mod(base.rows(), modulus);
+    while (remaining > 0) {
+        if (remaining & 1) result = multiply_mod(result, base, modulus);
+        remaining >>= 1;
+        if (remaining > 0) base = multiply_mod(base, base, modulus);
+    }
+    return result;
+}
+
+// 质数模高斯消元求行列式，空矩阵行列式定义为 1。
+inline u64 determinant_mod_prime(DenseMatrix<u64> value, u64 prime_modulus) {
+    detail::require_prime_modulus(prime_modulus);
+    detail::require_square(value);
+    value = normalize_mod_matrix(std::move(value), prime_modulus);
+
+    u64 determinant = 1 % prime_modulus;
+    for (size_t column = 0; column < value.rows(); ++column) {
+        size_t pivot = column;
+        while (pivot < value.rows() && value[pivot][column] == 0) ++pivot;
+        if (pivot == value.rows()) return 0;
+
+        if (pivot != column) {
+            value.swap_rows(pivot, column);
+            determinant = determinant == 0 ? 0 : prime_modulus - determinant;
+        }
+        const u64 pivot_value = value[column][column];
+        determinant = ::mul_mod(determinant, pivot_value, prime_modulus);
+        const u64 inverse =
+            ::quick_power(pivot_value, prime_modulus - 2, prime_modulus);
+
+        for (size_t row = column + 1; row < value.rows(); ++row) {
+            if (value[row][column] == 0) continue;
+            const u64 factor =
+                ::mul_mod(value[row][column], inverse, prime_modulus);
+            value[row][column] = 0;
+            for (size_t next = column + 1; next < value.columns(); ++next) {
+                const u64 product =
+                    ::mul_mod(factor, value[column][next], prime_modulus);
+                value[row][next] =
+                    detail::sub_mod(value[row][next], product, prime_modulus);
+            }
+        }
+    }
+    return determinant;
+}
+
+enum class LinearSystemStatus { NoSolution, Unique, Infinite };
+
+template <typename T>
+struct GaussianResult {
+    LinearSystemStatus status;
+    size_t rank;         // 系数矩阵的秩。
+    vector<T> solution;  // 无解时为空；有解时所有自由变量取 0。
+    vector<size_t> pivot_columns;
+};
+
+namespace detail {
+
+template <typename T>
+inline void require_augmented_shape(const vector<vector<T>>& augmented,
+                                    size_t variables) {
+    if (variables == std::numeric_limits<size_t>::max()) {
+        throw std::length_error("Gaussian elimination matrix is too wide");
+    }
+    const size_t width = variables + 1;
+    for (const auto& row : augmented) {
+        if (row.size() != width) {
+            throw std::invalid_argument(
+                "Gaussian elimination augmented matrix has invalid shape");
+        }
+    }
+}
+
+template <typename Integer>
+constexpr u64 normalize_integer_mod(Integer value, u64 modulus) noexcept {
+    using Value = std::remove_cv_t<Integer>;
+    static_assert(std::is_integral_v<Value> && !std::is_same_v<Value, bool>);
+    static_assert(sizeof(Value) <= sizeof(u64));
+    if constexpr (std::is_signed_v<Value>) {
+        i128 result = static_cast<i128>(value) % static_cast<i128>(modulus);
+        if (result < 0) result += static_cast<i128>(modulus);
+        return static_cast<u64>(result);
+    } else {
+        return static_cast<u64>(value) % modulus;
+    }
+}
+
+}  // namespace detail
+
+// augmented 每行是 n 个系数和最后一个常数，共 n+1 列。
+// 先按每行最大系数缩放，再做绝对值最大主元的 RREF；epsilon 因而是
+// 相对于单个方程尺度的阈值。病态问题仍应按数据误差自行调整 epsilon。
+// m 个方程、n 个未知量的时间复杂度 O(m*n*min(m,n))。
+inline GaussianResult<f80> gaussian_elimination_real(
+    vector<vector<f80>> augmented, size_t variables,
+    f80 epsilon = 64 * std::numeric_limits<f80>::epsilon()) {
+    detail::require_augmented_shape(augmented, variables);
+    if (!std::isfinite(epsilon) || epsilon < 0 || epsilon >= 1) {
+        throw std::invalid_argument(
+            "gaussian_elimination_real: epsilon must be in [0, 1)");
+    }
+
+    const size_t rows = augmented.size();
+    const size_t no_pivot = std::numeric_limits<size_t>::max();
+    vector<size_t> where(variables, no_pivot);
+    vector<size_t> pivot_columns;
+
+    for (auto& equation : augmented) {
+        f80 scale = 0;
+        for (f80 value : equation) {
+            if (!std::isfinite(value)) {
+                throw std::invalid_argument(
+                    "gaussian_elimination_real: entries must be finite");
+            }
+        }
+        for (size_t column = 0; column < variables; ++column) {
+            scale = std::max(scale, std::abs(equation[column]));
+        }
+
+        if (scale != 0) {
+            for (f80& value : equation) {
+                value /= scale;
+                if (!std::isfinite(value)) {
+                    throw std::overflow_error(
+                        "gaussian_elimination_real: non-finite arithmetic");
+                }
+            }
+        } else if (equation[variables] != 0) {
+            // 精确的 0 = 非零一定无解，不应因 RHS 很小而被 EPS 忽略。
+            equation[variables] =
+                std::copysign(static_cast<f80>(1), equation[variables]);
+        }
+    }
+
+    const auto is_zero = [epsilon](f80 value) {
+        return std::abs(value) <= epsilon;
+    };
+
+    size_t rank = 0;
+    for (size_t column = 0; column < variables && rank < rows; ++column) {
+        size_t pivot = rank;
+        for (size_t row = rank + 1; row < rows; ++row) {
+            if (std::abs(augmented[row][column]) >
+                std::abs(augmented[pivot][column])) {
+                pivot = row;
+            }
+        }
+        if (is_zero(augmented[pivot][column])) continue;
+
+        std::swap(augmented[pivot], augmented[rank]);
+        where[column] = rank;
+        pivot_columns.push_back(column);
+
+        const f80 pivot_value = augmented[rank][column];
+        for (size_t next = column + 1; next <= variables; ++next) {
+            augmented[rank][next] /= pivot_value;
+            if (!std::isfinite(augmented[rank][next])) {
+                throw std::overflow_error(
+                    "gaussian_elimination_real: non-finite arithmetic");
+            }
+        }
+        augmented[rank][column] = 1;
+
+        for (size_t row = 0; row < rows; ++row) {
+            if (row == rank) continue;
+            const f80 factor = augmented[row][column];
+            if (factor == 0) continue;
+            for (size_t next = column + 1; next <= variables; ++next) {
+                augmented[row][next] = std::fma(-factor, augmented[rank][next],
+                                                augmented[row][next]);
+                if (!std::isfinite(augmented[row][next])) {
+                    throw std::overflow_error(
+                        "gaussian_elimination_real: non-finite arithmetic");
+                }
+            }
+            augmented[row][column] = 0;
+        }
+        ++rank;
+    }
+
+    for (const auto& equation : augmented) {
+        bool zero_left = true;
+        for (size_t column = 0; column < variables; ++column) {
+            if (!is_zero(equation[column])) {
+                zero_left = false;
+                break;
+            }
+        }
+        if (zero_left && !is_zero(equation[variables])) {
+            return {LinearSystemStatus::NoSolution,
+                    rank,
+                    {},
+                    std::move(pivot_columns)};
+        }
+    }
+
+    vector<f80> solution(variables);
+    for (size_t column = 0; column < variables; ++column) {
+        if (where[column] != no_pivot) {
+            solution[column] = augmented[where[column]][variables];
+            if (is_zero(solution[column])) solution[column] = 0;
+        }
+    }
+    const LinearSystemStatus status = rank == variables
+                                          ? LinearSystemStatus::Unique
+                                          : LinearSystemStatus::Infinite;
+    return {status, rank, std::move(solution), std::move(pivot_columns)};
+}
+
+// 质数模有限域高斯消元。元素可用任意不超过 64 位的非 bool 整数，
+// 负数会自动规范化；模数使用完整 u64 Miller-Rabin 验证。
+template <typename Integer,
+          std::enable_if_t<std::is_integral_v<Integer> &&
+                               !std::is_same_v<Integer, bool> &&
+                               (sizeof(Integer) <= sizeof(u64)),
+                           int> = 0>
+GaussianResult<u64> gaussian_elimination_prime_mod(
+    const vector<vector<Integer>>& augmented, size_t variables,
+    u64 prime_modulus) {
+    detail::require_augmented_shape(augmented, variables);
+    detail::require_prime_modulus(prime_modulus);
+
+    const size_t rows = augmented.size();
+    const size_t width = variables + 1;
+    const size_t no_pivot = std::numeric_limits<size_t>::max();
+    vector<vector<u64>> value(rows, vector<u64>(width));
+    for (size_t row = 0; row < rows; ++row) {
+        for (size_t column = 0; column < width; ++column) {
+            value[row][column] = detail::normalize_integer_mod(
+                augmented[row][column], prime_modulus);
+        }
+    }
+
+    vector<size_t> where(variables, no_pivot);
+    vector<size_t> pivot_columns;
+    size_t rank = 0;
+    for (size_t column = 0; column < variables && rank < rows; ++column) {
+        size_t pivot = rank;
+        while (pivot < rows && value[pivot][column] == 0) ++pivot;
+        if (pivot == rows) continue;
+
+        std::swap(value[pivot], value[rank]);
+        where[column] = rank;
+        pivot_columns.push_back(column);
+        const u64 inverse = ::quick_power(value[rank][column],
+                                          prime_modulus - 2, prime_modulus);
+        for (size_t next = column + 1; next <= variables; ++next) {
+            value[rank][next] =
+                ::mul_mod(value[rank][next], inverse, prime_modulus);
+        }
+        value[rank][column] = 1;
+
+        for (size_t row = 0; row < rows; ++row) {
+            if (row == rank) continue;
+            const u64 factor = value[row][column];
+            if (factor == 0) continue;
+            for (size_t next = column + 1; next <= variables; ++next) {
+                const u64 product =
+                    ::mul_mod(factor, value[rank][next], prime_modulus);
+                value[row][next] =
+                    detail::sub_mod(value[row][next], product, prime_modulus);
+            }
+            value[row][column] = 0;
+        }
+        ++rank;
+    }
+
+    for (const auto& equation : value) {
+        bool zero_left = true;
+        for (size_t column = 0; column < variables; ++column) {
+            if (equation[column] != 0) {
+                zero_left = false;
+                break;
+            }
+        }
+        if (zero_left && equation[variables] != 0) {
+            return {LinearSystemStatus::NoSolution,
+                    rank,
+                    {},
+                    std::move(pivot_columns)};
+        }
+    }
+
+    vector<u64> solution(variables);
+    for (size_t column = 0; column < variables; ++column) {
+        if (where[column] != no_pivot) {
+            solution[column] = value[where[column]][variables];
+        }
+    }
+    const LinearSystemStatus status = rank == variables
+                                          ? LinearSystemStatus::Unique
+                                          : LinearSystemStatus::Infinite;
+    return {status, rank, std::move(solution), std::move(pivot_columns)};
+}
+
+struct UndirectedEdge {
+    size_t u;
+    size_t v;
+    u64 weight = 1;
+};
+
+struct DirectedEdge {
+    size_t from;
+    size_t to;
+    u64 weight = 1;
+};
+
+enum class ArborescenceDirection {
+    TowardRoot,   // 每个点沿有向边最终走到 root。
+    AwayFromRoot  // 从 root 沿有向边可到达每个点。
+};
+
+namespace detail {
+
+inline void require_nonempty_graph(size_t vertex_count) {
+    if (vertex_count == 0) {
+        throw std::invalid_argument(
+            "Matrix-Tree theorem requires at least one vertex");
+    }
+}
+
+inline void require_vertex(size_t vertex, size_t vertex_count) {
+    if (vertex >= vertex_count) {
+        throw std::out_of_range("graph vertex is out of range");
+    }
+}
+
+inline void require_direction(ArborescenceDirection direction) {
+    if (direction != ArborescenceDirection::TowardRoot &&
+        direction != ArborescenceDirection::AwayFromRoot) {
+        throw std::invalid_argument("unknown arborescence direction");
+    }
+}
+
+inline void add_to_cell(u64& cell, u64 value, u64 modulus) noexcept {
+    cell = add_mod(cell, value, modulus);
+}
+
+inline void subtract_from_cell(u64& cell, u64 value, u64 modulus) noexcept {
+    cell = sub_mod(cell, value, modulus);
+}
+
+inline DenseMatrix<u64> principal_minor(const DenseMatrix<u64>& value,
+                                        size_t removed) {
+    require_square(value);
+    if (removed >= value.rows()) {
+        throw std::out_of_range("principal minor index is out of range");
+    }
+    DenseMatrix<u64> result(value.rows() - 1, value.columns() - 1);
+    for (size_t row = 0, target_row = 0; row < value.rows(); ++row) {
+        if (row == removed) continue;
+        for (size_t column = 0, target_column = 0; column < value.columns();
+             ++column) {
+            if (column == removed) continue;
+            result[target_row][target_column++] = value[row][column];
+        }
+        ++target_row;
+    }
+    return result;
+}
+
+}  // namespace detail
+
+// 无向图 Laplacian：L=D-A。自环忽略，平行边逐条累加。
+inline DenseMatrix<u64> make_undirected_laplacian(
+    size_t vertex_count, const vector<UndirectedEdge>& edges, u64 modulus) {
+    detail::require_modulus(modulus);
+    detail::require_nonempty_graph(vertex_count);
+    DenseMatrix<u64> laplacian(vertex_count, vertex_count);
+    for (const UndirectedEdge& edge : edges) {
+        detail::require_vertex(edge.u, vertex_count);
+        detail::require_vertex(edge.v, vertex_count);
+        if (edge.u == edge.v) continue;
+        const u64 weight = edge.weight % modulus;
+        detail::add_to_cell(laplacian[edge.u][edge.u], weight, modulus);
+        detail::add_to_cell(laplacian[edge.v][edge.v], weight, modulus);
+        detail::subtract_from_cell(laplacian[edge.u][edge.v], weight, modulus);
+        detail::subtract_from_cell(laplacian[edge.v][edge.u], weight, modulus);
+    }
+    return laplacian;
+}
+
+// TowardRoot 使用出度 Laplacian D_out-A；AwayFromRoot 使用入度版本，
+// 即对边 from->to 更新 L[to][to] 和 L[to][from]。
+inline DenseMatrix<u64> make_directed_laplacian(
+    size_t vertex_count, const vector<DirectedEdge>& edges,
+    ArborescenceDirection direction, u64 modulus) {
+    detail::require_modulus(modulus);
+    detail::require_nonempty_graph(vertex_count);
+    detail::require_direction(direction);
+    DenseMatrix<u64> laplacian(vertex_count, vertex_count);
+    for (const DirectedEdge& edge : edges) {
+        detail::require_vertex(edge.from, vertex_count);
+        detail::require_vertex(edge.to, vertex_count);
+        if (edge.from == edge.to) continue;
+        const u64 weight = edge.weight % modulus;
+        if (direction == ArborescenceDirection::TowardRoot) {
+            detail::add_to_cell(laplacian[edge.from][edge.from], weight,
+                                modulus);
+            detail::subtract_from_cell(laplacian[edge.from][edge.to], weight,
+                                       modulus);
+        } else {
+            detail::add_to_cell(laplacian[edge.to][edge.to], weight, modulus);
+            detail::subtract_from_cell(laplacian[edge.to][edge.from], weight,
+                                       modulus);
+        }
+    }
+    return laplacian;
+}
+
+// 结果是所有生成树边权乘积之和；单位权时就是生成树数量。
+// prime_modulus 必须为质数。复杂度 O(n^3 + m)，空间 O(n^2)。
+inline u64 count_spanning_trees_undirected(size_t vertex_count,
+                                           const vector<UndirectedEdge>& edges,
+                                           u64 prime_modulus) {
+    detail::require_prime_modulus(prime_modulus);
+    detail::require_nonempty_graph(vertex_count);
+    DenseMatrix<u64> laplacian =
+        make_undirected_laplacian(vertex_count, edges, prime_modulus);
+    DenseMatrix<u64> minor =
+        detail::principal_minor(laplacian, vertex_count - 1);
+    return determinant_mod_prime(std::move(minor), prime_modulus);
+}
+
+inline u64 count_rooted_arborescences(size_t vertex_count,
+                                      const vector<DirectedEdge>& edges,
+                                      size_t root,
+                                      ArborescenceDirection direction,
+                                      u64 prime_modulus) {
+    detail::require_prime_modulus(prime_modulus);
+    detail::require_nonempty_graph(vertex_count);
+    detail::require_vertex(root, vertex_count);
+    detail::require_direction(direction);
+    DenseMatrix<u64> laplacian =
+        make_directed_laplacian(vertex_count, edges, direction, prime_modulus);
+    DenseMatrix<u64> minor = detail::principal_minor(laplacian, root);
+    return determinant_mod_prime(std::move(minor), prime_modulus);
+}
+
+inline u64 count_in_arborescences(size_t vertex_count,
+                                  const vector<DirectedEdge>& edges,
+                                  size_t root, u64 prime_modulus) {
+    return count_rooted_arborescences(vertex_count, edges, root,
+                                      ArborescenceDirection::TowardRoot,
+                                      prime_modulus);
+}
+
+inline u64 count_out_arborescences(size_t vertex_count,
+                                   const vector<DirectedEdge>& edges,
+                                   size_t root, u64 prime_modulus) {
+    return count_rooted_arborescences(vertex_count, edges, root,
+                                      ArborescenceDirection::AwayFromRoot,
+                                      prime_modulus);
+}
+
+enum class TropicalKind { MinPlus, MaxPlus };
+
+// 当前半环的哨兵表示不可达，不能同时作为一个有限权值使用。
+constexpr i64 MIN_PLUS_INF = std::numeric_limits<i64>::max();
+constexpr i64 MAX_PLUS_NEG_INF = std::numeric_limits<i64>::lowest();
+
+namespace detail {
+
+inline void require_tropical_kind(TropicalKind kind) {
+    if (kind != TropicalKind::MinPlus && kind != TropicalKind::MaxPlus) {
+        throw std::invalid_argument("unknown tropical matrix kind");
+    }
+}
+
+constexpr i64 tropical_unreachable(TropicalKind kind) noexcept {
+    return kind == TropicalKind::MinPlus ? MIN_PLUS_INF : MAX_PLUS_NEG_INF;
+}
+
+inline i64 checked_tropical_sum(i64 left, i64 right, TropicalKind kind) {
+    const i128 sum = static_cast<i128>(left) + static_cast<i128>(right);
+    const i128 lowest = static_cast<i128>(std::numeric_limits<i64>::lowest());
+    const i128 highest = static_cast<i128>(std::numeric_limits<i64>::max());
+    if (sum < lowest || sum > highest ||
+        (kind == TropicalKind::MinPlus && sum == highest) ||
+        (kind == TropicalKind::MaxPlus && sum == lowest)) {
+        throw std::overflow_error(
+            "tropical path weight overflows or collides with infinity");
+    }
+    return static_cast<i64>(sum);
+}
+
+}  // namespace detail
+
+inline DenseMatrix<i64> tropical_identity(size_t size, TropicalKind kind) {
+    detail::require_tropical_kind(kind);
+    DenseMatrix<i64> result(size, size, detail::tropical_unreachable(kind));
+    for (size_t i = 0; i < size; ++i) result[i][i] = 0;
+    return result;
+}
+
+// Min-Plus: result[i][j] = min_k(left[i][k] + right[k][j])；
+// Max-Plus 将 min 换成 max。有限和用 i128 检查，不做静默饱和。
+inline DenseMatrix<i64> tropical_multiply(const DenseMatrix<i64>& left,
+                                          const DenseMatrix<i64>& right,
+                                          TropicalKind kind) {
+    detail::require_tropical_kind(kind);
+    detail::require_multipliable(left, right);
+    const i64 unreachable = detail::tropical_unreachable(kind);
+    DenseMatrix<i64> result(left.rows(), right.columns(), unreachable);
+    for (size_t row = 0; row < left.rows(); ++row) {
+        for (size_t middle = 0; middle < left.columns(); ++middle) {
+            if (left[row][middle] == unreachable) continue;
+            for (size_t column = 0; column < right.columns(); ++column) {
+                if (right[middle][column] == unreachable) continue;
+                const i64 candidate = detail::checked_tropical_sum(
+                    left[row][middle], right[middle][column], kind);
+                i64& answer = result[row][column];
+                if (answer == unreachable ||
+                    (kind == TropicalKind::MinPlus && candidate < answer) ||
+                    (kind == TropicalKind::MaxPlus && candidate > answer)) {
+                    answer = candidate;
+                }
+            }
+        }
+    }
+    return result;
+}
+
+// 邻接矩阵的 k 次幂表示恰好走 k 条边；要求至多 k 条边时，先将对角线
+// 与 0 取 min/max，加入“原地不走”的转移。
+template <
+    typename Exponent,
+    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
+                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
+                         (sizeof(Exponent) <= sizeof(u64)),
+                     int> = 0>
+DenseMatrix<i64> tropical_power(DenseMatrix<i64> base, Exponent exponent,
+                                TropicalKind kind) {
+    detail::require_tropical_kind(kind);
+    detail::require_square(base);
+    u64 remaining = detail::checked_exponent(exponent);
+    DenseMatrix<i64> result = tropical_identity(base.rows(), kind);
+    while (remaining > 0) {
+        if (remaining & 1) result = tropical_multiply(result, base, kind);
+        remaining >>= 1;
+        if (remaining > 0) base = tropical_multiply(base, base, kind);
+    }
+    return result;
+}
+
+inline DenseMatrix<i64> min_plus_multiply(const DenseMatrix<i64>& left,
+                                          const DenseMatrix<i64>& right) {
+    return tropical_multiply(left, right, TropicalKind::MinPlus);
+}
+
+inline DenseMatrix<i64> max_plus_multiply(const DenseMatrix<i64>& left,
+                                          const DenseMatrix<i64>& right) {
+    return tropical_multiply(left, right, TropicalKind::MaxPlus);
+}
+
+template <
+    typename Exponent,
+    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
+                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
+                         (sizeof(Exponent) <= sizeof(u64)),
+                     int> = 0>
+DenseMatrix<i64> min_plus_power(DenseMatrix<i64> base, Exponent exponent) {
+    return tropical_power(std::move(base), exponent, TropicalKind::MinPlus);
+}
+
+template <
+    typename Exponent,
+    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
+                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
+                         (sizeof(Exponent) <= sizeof(u64)),
+                     int> = 0>
+DenseMatrix<i64> max_plus_power(DenseMatrix<i64> base, Exponent exponent) {
+    return tropical_power(std::move(base), exponent, TropicalKind::MaxPlus);
+}
+
+}  // namespace matrix
+
+// 矩阵使用示例：
+// matrix::DenseMatrix<u64> fib{{1, 1}, {1, 0}};
+// auto fib_power = matrix::power_mod(fib, n, 1'000'000'007ULL);
+// auto real_system = matrix::gaussian_elimination_real(
+//     {{1, 2, 5}, {3, 4, 11}}, 2);  // 最后一列是常数
+// auto mod_system = matrix::gaussian_elimination_prime_mod(
+//     vector<vector<i64>>{{1, 2, 5}, {3, 4, 11}}, 2, 998244353);
+// vector<matrix::UndirectedEdge> graph_edges{{0, 1}, {1, 2}, {2, 0}};
+// auto tree_count =
+//     matrix::count_spanning_trees_undirected(3, graph_edges, 1'000'000'007);
+// matrix::DenseMatrix<i64> distances(
+//     n, n, matrix::MIN_PLUS_INF);  // distances[u][v] = 边权
+// auto exactly_k_edges = matrix::min_plus_power(distances, k);
+
 // 多项式卷积：浮点 FFT、998244353 NTT、任意正 int 模 MTT、拆系数 FFT。
 // 四种 convolution_* 都允许负输入，空数组返回空数组，结果长度为 n+m-1。
 namespace poly {
