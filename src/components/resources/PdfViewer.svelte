@@ -4,6 +4,7 @@ import type {
     PDFDocumentLoadingTask,
     PDFDocumentProxy,
     PDFPageProxy,
+    RefProxy,
     RenderTask,
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -11,6 +12,7 @@ import { onDestroy, onMount, tick } from "svelte";
 import type { ResourceItem, ResourceListResponse } from "@/types/resources";
 
 type PageStatus = "idle" | "rendering" | "rendered" | "error";
+type DocumentIndexMode = "outline" | "pages";
 
 interface PageState {
     number: number;
@@ -25,6 +27,27 @@ interface ReadingPosition {
     version: 1;
     page: number;
     offset: number;
+}
+
+interface PdfOutlineNode {
+    title: string;
+    bold: boolean;
+    italic: boolean;
+    dest: string | unknown[] | null;
+    items: PdfOutlineNode[];
+}
+
+interface OutlineCandidate {
+    id: string;
+    title: string;
+    level: number;
+    bold: boolean;
+    italic: boolean;
+    destination: string | unknown[] | null;
+}
+
+interface OutlineEntry extends Omit<OutlineCandidate, "destination"> {
+    page: number | null;
 }
 
 const MAX_FIT_WIDTH = 1100;
@@ -42,6 +65,9 @@ let pdfDocument: PDFDocumentProxy | null = null;
 let loadingTask: PDFDocumentLoadingTask | null = null;
 let readerShell: HTMLElement;
 let viewerStage: HTMLDivElement;
+let indexToggleButton: HTMLButtonElement;
+let indexSearchInput: HTMLInputElement;
+let documentIndexDialog: HTMLElement;
 let resizeObserver: ResizeObserver | null = null;
 let renderObserver: IntersectionObserver | null = null;
 let resizeFrame = 0;
@@ -67,6 +93,19 @@ let fitWidth = true;
 let rotation = 0;
 let readingPercent = 0;
 let resumeNotice = "";
+let documentIndexOpen = false;
+let documentIndexLoading = false;
+let documentIndexMode: DocumentIndexMode = "outline";
+let documentIndexQuery = "";
+let documentIndexError = "";
+let outlineEntries: OutlineEntry[] = [];
+let pageLabels: string[] = [];
+let allPageNumbers: number[] = [];
+let filteredOutlineEntries: OutlineEntry[] = [];
+let filteredPageNumbers: number[] = [];
+let hasOutline = false;
+let activeOutlineId = "";
+let indexLoadSequence = 0;
 let passwordOpen = false;
 let passwordIncorrect = false;
 let passwordValue = "";
@@ -79,6 +118,18 @@ const renderTasks = new Map<number, RenderTask>();
 const renderVersions = new Map<number, number>();
 
 $: actualScale = pages[0] ? getPageScale(pages[0], viewerWidth) : 1;
+$: hasOutline = outlineEntries.some((entry) => entry.page !== null);
+$: filteredOutlineEntries = filterOutlineEntries(
+    outlineEntries,
+    documentIndexQuery,
+    pageLabels,
+);
+$: filteredPageNumbers = filterPageNumbers(
+    allPageNumbers,
+    documentIndexQuery,
+    pageLabels,
+);
+$: activeOutlineId = findActiveOutlineId(outlineEntries, pageNumber);
 
 function clamp(value: number, minimum: number, maximum: number): number {
     return Math.min(Math.max(value, minimum), maximum);
@@ -105,6 +156,293 @@ async function fetchResource(): Promise<ResourceItem> {
     const item = body.resources.find((candidate) => candidate.id === id);
     if (!item) throw new Error("资源不存在或已被删除");
     return item;
+}
+
+function normalizeIndexSearch(value: string): string {
+    return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function pageDisplayLabel(number: number, labels = pageLabels): string {
+    const label = labels[number - 1]?.trim();
+    return label || String(number);
+}
+
+function filterOutlineEntries(
+    entries: OutlineEntry[],
+    query: string,
+    labels: string[],
+): OutlineEntry[] {
+    const term = normalizeIndexSearch(query);
+    if (!term) return entries;
+    return entries.filter((entry) => {
+        const page = entry.page;
+        return (
+            normalizeIndexSearch(entry.title).includes(term) ||
+            (page !== null &&
+                (String(page).includes(term) ||
+                    normalizeIndexSearch(
+                        pageDisplayLabel(page, labels),
+                    ).includes(term)))
+        );
+    });
+}
+
+function filterPageNumbers(
+    numbers: number[],
+    query: string,
+    labels: string[],
+): number[] {
+    const term = normalizeIndexSearch(query);
+    if (!term) return numbers;
+    return numbers.filter(
+        (number) =>
+            String(number).includes(term) ||
+            normalizeIndexSearch(pageDisplayLabel(number, labels)).includes(
+                term,
+            ),
+    );
+}
+
+function findActiveOutlineId(
+    entries: OutlineEntry[],
+    currentPage: number,
+): string {
+    let active: OutlineEntry | null = null;
+    for (const entry of entries) {
+        if (entry.page === null || entry.page > currentPage) continue;
+        if (
+            active === null ||
+            active.page === null ||
+            entry.page > active.page ||
+            (entry.page === active.page && entry.level >= active.level)
+        ) {
+            active = entry;
+        }
+    }
+    return active?.id || "";
+}
+
+function flattenOutline(nodes: PdfOutlineNode[]): OutlineCandidate[] {
+    const result: OutlineCandidate[] = [];
+    const stack = [...nodes].reverse().map((node) => ({ node, level: 0 }));
+    let sequence = 0;
+
+    while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current) break;
+        const { node, level } = current;
+        const title = node.title?.replace(/\s+/g, " ").trim() || "未命名章节";
+        result.push({
+            id: `pdf-outline-${sequence++}`,
+            title,
+            level,
+            bold: Boolean(node.bold),
+            italic: Boolean(node.italic),
+            destination: node.dest,
+        });
+
+        const children = Array.isArray(node.items) ? node.items : [];
+        for (let index = children.length - 1; index >= 0; --index) {
+            stack.push({ node: children[index], level: level + 1 });
+        }
+    }
+    return result;
+}
+
+function isPageReference(value: unknown): value is RefProxy {
+    if (!value || typeof value !== "object") return false;
+    const reference = value as Partial<RefProxy>;
+    return Number.isInteger(reference.num) && Number.isInteger(reference.gen);
+}
+
+async function resolveOutlinePage(
+    document: PDFDocumentProxy,
+    destination: string | unknown[] | null,
+    namedDestinations: Map<string, Promise<unknown[] | null>>,
+    pageReferences: Map<string, Promise<number | null>>,
+): Promise<number | null> {
+    if (!destination) return null;
+
+    let explicitDestination: unknown[] | null;
+    try {
+        if (typeof destination === "string") {
+            let request = namedDestinations.get(destination);
+            if (!request) {
+                request = document.getDestination(destination);
+                namedDestinations.set(destination, request);
+            }
+            explicitDestination = await request;
+        } else {
+            explicitDestination = destination;
+        }
+    } catch {
+        return null;
+    }
+
+    if (!Array.isArray(explicitDestination)) return null;
+    const reference = explicitDestination[0];
+    if (Number.isInteger(reference)) {
+        const page = Number(reference) + 1;
+        return page >= 1 && page <= document.numPages ? page : null;
+    }
+    if (!isPageReference(reference)) return null;
+
+    const key = `${reference.num}:${reference.gen}`;
+    let request = pageReferences.get(key);
+    if (!request) {
+        request = document
+            .getPageIndex(reference)
+            .then((index) => index + 1)
+            .catch(() => null);
+        pageReferences.set(key, request);
+    }
+    const page = await request;
+    return page !== null && page >= 1 && page <= document.numPages
+        ? page
+        : null;
+}
+
+async function loadDocumentIndex(document: PDFDocumentProxy): Promise<void> {
+    const sequence = ++indexLoadSequence;
+    documentIndexLoading = true;
+    documentIndexError = "";
+    outlineEntries = [];
+    pageLabels = Array.from({ length: document.numPages }, (_, index) =>
+        String(index + 1),
+    );
+    allPageNumbers = Array.from(
+        { length: document.numPages },
+        (_, index) => index + 1,
+    );
+
+    const [outlineResult, labelsResult] = await Promise.allSettled([
+        document.getOutline(),
+        document.getPageLabels(),
+    ]);
+    if (sequence !== indexLoadSequence || document !== pdfDocument) return;
+
+    if (
+        labelsResult.status === "fulfilled" &&
+        labelsResult.value?.length === document.numPages
+    ) {
+        pageLabels = labelsResult.value.map(
+            (label, index) => label?.trim() || String(index + 1),
+        );
+    }
+
+    const nodes =
+        outlineResult.status === "fulfilled" &&
+        Array.isArray(outlineResult.value)
+            ? (outlineResult.value as PdfOutlineNode[])
+            : [];
+    const candidates = flattenOutline(nodes);
+    const namedDestinations = new Map<string, Promise<unknown[] | null>>();
+    const pageReferences = new Map<string, Promise<number | null>>();
+    const resolvedEntries = await Promise.all(
+        candidates.map(
+            async (candidate): Promise<OutlineEntry> => ({
+                id: candidate.id,
+                title: candidate.title,
+                level: candidate.level,
+                bold: candidate.bold,
+                italic: candidate.italic,
+                page: await resolveOutlinePage(
+                    document,
+                    candidate.destination,
+                    namedDestinations,
+                    pageReferences,
+                ),
+            }),
+        ),
+    );
+    if (sequence !== indexLoadSequence || document !== pdfDocument) return;
+
+    outlineEntries = resolvedEntries;
+    documentIndexMode = resolvedEntries.some((entry) => entry.page !== null)
+        ? "outline"
+        : "pages";
+    if (outlineResult.status === "rejected") {
+        documentIndexError = "PDF 目录读取失败";
+    }
+    documentIndexLoading = false;
+}
+
+async function openDocumentIndex(): Promise<void> {
+    documentIndexOpen = true;
+    await tick();
+    indexSearchInput?.focus({ preventScroll: true });
+    if (documentIndexMode === "outline" && activeOutlineId) {
+        documentIndexDialog
+            ?.querySelector<HTMLElement>(
+                `[data-outline-id="${activeOutlineId}"]`,
+            )
+            ?.scrollIntoView({ block: "center" });
+    }
+}
+
+async function closeDocumentIndex(restoreFocus = true): Promise<void> {
+    documentIndexOpen = false;
+    documentIndexQuery = "";
+    await tick();
+    if (restoreFocus) {
+        indexToggleButton?.focus({ preventScroll: true });
+    }
+}
+
+function toggleDocumentIndex(): void {
+    if (documentIndexOpen) {
+        void closeDocumentIndex();
+    } else {
+        void openDocumentIndex();
+    }
+}
+
+async function selectDocumentIndexMode(mode: DocumentIndexMode): Promise<void> {
+    if (mode !== documentIndexMode) {
+        documentIndexMode = mode;
+        documentIndexQuery = "";
+        await tick();
+    }
+    indexSearchInput?.focus({ preventScroll: true });
+}
+
+function jumpToIndexedPage(number: number): void {
+    changePage(number);
+    void closeDocumentIndex();
+}
+
+function handleDocumentKeydown(event: KeyboardEvent): void {
+    if (!documentIndexOpen) return;
+    if (event.key === "Escape") {
+        event.preventDefault();
+        void closeDocumentIndex();
+        return;
+    }
+    if (event.key !== "Tab" || !documentIndexDialog) return;
+
+    const focusable = [
+        ...documentIndexDialog.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+        ),
+    ].filter((element) => !element.hasAttribute("inert"));
+    if (focusable.length === 0) return;
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (
+        event.shiftKey &&
+        (active === first || !documentIndexDialog.contains(active))
+    ) {
+        event.preventDefault();
+        last.focus();
+    } else if (
+        !event.shiftKey &&
+        (active === last || !documentIndexDialog.contains(active))
+    ) {
+        event.preventDefault();
+        first.focus();
+    }
 }
 
 function rotatedDimensions(page: PageState): [number, number] {
@@ -640,9 +978,11 @@ async function openPdf(): Promise<void> {
         loading = false;
     };
 
-    pdfDocument = await loadingTask.promise;
-    pageCount = pdfDocument.numPages;
-    const firstPage = await pdfDocument.getPage(1);
+    const document = await loadingTask.promise;
+    pdfDocument = document;
+    pageCount = document.numPages;
+    void loadDocumentIndex(document);
+    const firstPage = await document.getPage(1);
     const firstViewport = firstPage.getViewport({ scale: 1, rotation: 0 });
     pages = Array.from({ length: pageCount }, (_, index) => ({
         number: index + 1,
@@ -692,6 +1032,7 @@ onMount(() => {
         handleVisualViewportChange,
     );
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("keydown", handleDocumentKeydown);
     window.addEventListener("pagehide", handlePageHide);
     openPdf().catch((error) => {
         errorMessage = error instanceof Error ? error.message : "PDF 加载失败";
@@ -718,7 +1059,9 @@ onDestroy(() => {
         handleVisualViewportChange,
     );
     document.removeEventListener("visibilitychange", handleVisibilityChange);
+    document.removeEventListener("keydown", handleDocumentKeydown);
     window.removeEventListener("pagehide", handlePageHide);
+    ++indexLoadSequence;
     renderTasks.forEach((task) => {
         task.cancel();
     });
@@ -792,7 +1135,11 @@ function unlockPdf(): void {
     data-no-swup
     class="pdf-reader-shell relative overflow-hidden rounded-lg"
 >
-    <div class="card-base flex h-full flex-col overflow-hidden rounded-lg">
+    <div
+        class="card-base flex h-full flex-col overflow-hidden rounded-lg"
+        inert={documentIndexOpen}
+        aria-hidden={documentIndexOpen}
+    >
         <header class="flex min-h-14 items-center gap-2.5 border-b border-black/5 px-2.5 py-2 dark:border-white/10 sm:min-h-16 sm:gap-3 sm:px-5 sm:py-3">
             <a
                 href="/resources/"
@@ -889,6 +1236,18 @@ function unlockPdf(): void {
         {:else}
             <div class="flex flex-nowrap items-center justify-between gap-1 overflow-hidden border-b border-black/5 bg-[var(--btn-regular-bg)]/45 px-1 py-1.5 dark:border-white/10 sm:px-4 sm:py-2">
                 <div class="flex h-8 shrink-0 items-center gap-0 sm:h-9 sm:gap-1">
+                    <button
+                        bind:this={indexToggleButton}
+                        type="button"
+                        class={`flex h-8 w-8 items-center justify-center rounded-lg transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-9 sm:w-9 ${documentIndexOpen ? "bg-[var(--primary)] text-white" : "text-75 hover:bg-[var(--btn-regular-bg)]"}`}
+                        on:click={toggleDocumentIndex}
+                        aria-label={documentIndexOpen ? "关闭文档目录" : "打开文档目录"}
+                        aria-controls="pdf-document-index"
+                        aria-expanded={documentIndexOpen}
+                        title="文档目录"
+                    >
+                        <Icon icon="material-symbols:toc-rounded" width="21" />
+                    </button>
                     <button
                         type="button"
                         class="flex h-8 w-8 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] sm:h-9 sm:w-9"
@@ -1041,6 +1400,179 @@ function unlockPdf(): void {
                 </div>
             </div>
         {/if}
+    </div>
+
+    <button
+        type="button"
+        class={`absolute inset-0 z-30 bg-black/40 transition-opacity duration-200 ${documentIndexOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
+        aria-label="关闭文档目录"
+        aria-hidden={!documentIndexOpen}
+        tabindex="-1"
+        on:click={() => void closeDocumentIndex()}
+    ></button>
+
+    <div
+        bind:this={documentIndexDialog}
+        id="pdf-document-index"
+        class={`absolute inset-y-0 left-0 z-40 flex w-[calc(100%-2rem)] max-w-[22rem] flex-col border-r border-black/10 bg-[var(--card-bg)] shadow-2xl transition-transform duration-200 dark:border-white/10 ${documentIndexOpen ? "translate-x-0" : "-translate-x-full"}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pdf-document-index-title"
+        aria-hidden={!documentIndexOpen}
+        inert={!documentIndexOpen}
+    >
+        <div class="flex min-h-16 shrink-0 items-center gap-3 border-b border-black/5 px-4 dark:border-white/10">
+            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--btn-regular-bg)] text-[var(--primary)]">
+                <Icon icon="material-symbols:toc-rounded" width="21" />
+            </div>
+            <div class="min-w-0 flex-1">
+                <h2 id="pdf-document-index-title" class="text-base font-bold text-90">文档目录</h2>
+                <p class="truncate text-xs text-50" title={resource?.title || "PDF 文档"}>
+                    {resource?.title || "PDF 文档"}
+                </p>
+            </div>
+            <button
+                type="button"
+                class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-75 transition hover:bg-[var(--btn-regular-bg)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+                on:click={() => void closeDocumentIndex()}
+                aria-label="关闭文档目录"
+                title="关闭"
+            >
+                <Icon icon="material-symbols:close-rounded" width="21" />
+            </button>
+        </div>
+
+        <div class="shrink-0 border-b border-black/5 px-3 py-3 dark:border-white/10">
+            {#if documentIndexLoading || hasOutline}
+                <div class="mb-3 grid grid-cols-2 rounded-lg bg-[var(--btn-regular-bg)] p-1" role="tablist" aria-label="目录视图">
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={documentIndexMode === "outline"}
+                        aria-controls="pdf-document-index-panel"
+                        tabindex={documentIndexMode === "outline" ? 0 : -1}
+                        class={`h-8 rounded-md text-xs font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary)] ${documentIndexMode === "outline" ? "bg-[var(--card-bg)] text-[var(--primary)] shadow-sm" : "text-50 hover:text-75"}`}
+                        on:click={() => void selectDocumentIndexMode("outline")}
+                    >
+                        目录
+                    </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={documentIndexMode === "pages"}
+                        aria-controls="pdf-document-index-panel"
+                        tabindex={documentIndexMode === "pages" ? 0 : -1}
+                        class={`h-8 rounded-md text-xs font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary)] ${documentIndexMode === "pages" ? "bg-[var(--card-bg)] text-[var(--primary)] shadow-sm" : "text-50 hover:text-75"}`}
+                        on:click={() => void selectDocumentIndexMode("pages")}
+                    >
+                        页码
+                    </button>
+                </div>
+            {/if}
+
+            <label class="relative block">
+                <span class="sr-only">
+                    {documentIndexMode === "outline" ? "搜索目录" : "搜索页码"}
+                </span>
+                <Icon
+                    icon="material-symbols:search-rounded"
+                    width="18"
+                    class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-30"
+                />
+                <input
+                    bind:this={indexSearchInput}
+                    bind:value={documentIndexQuery}
+                    type="search"
+                    name="pdf-index-search"
+                    autocomplete="off"
+                    placeholder={documentIndexMode === "outline" ? "搜索章节或页码" : "搜索页码"}
+                    class="h-10 w-full rounded-lg border border-black/10 bg-[var(--btn-regular-bg)] pl-9 pr-3 text-sm text-90 outline-none placeholder:text-30 focus-visible:border-[var(--primary)] focus-visible:ring-2 focus-visible:ring-[var(--primary)]/20 dark:border-white/10"
+                />
+            </label>
+        </div>
+
+        <div
+            id="pdf-document-index-panel"
+            class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
+            data-lenis-prevent
+            role="tabpanel"
+        >
+            {#if documentIndexOpen}
+            {#if documentIndexMode === "outline"}
+                {#if documentIndexLoading}
+                    <div class="flex h-32 items-center justify-center gap-2 text-sm text-50" aria-live="polite">
+                        <Icon icon="material-symbols:progress-activity" width="20" class="animate-spin text-[var(--primary)]" />
+                        <span>正在读取目录</span>
+                    </div>
+                {:else if filteredOutlineEntries.length > 0}
+                    <nav aria-label="PDF 书签目录" class="space-y-0.5">
+                        {#each filteredOutlineEntries as entry (entry.id)}
+                            <button
+                                type="button"
+                                class={`flex min-h-10 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary)] ${entry.id === activeOutlineId ? "bg-[var(--btn-regular-bg)] text-[var(--primary)]" : entry.page === null ? "cursor-default text-40" : "text-75 hover:bg-[var(--btn-regular-bg)]"}`}
+                                class:font-bold={entry.bold}
+                                class:italic={entry.italic}
+                                data-outline-id={entry.id}
+                                style={`padding-left: ${0.75 + Math.min(entry.level, 6) * 0.85}rem`}
+                                disabled={entry.page === null}
+                                aria-current={entry.id === activeOutlineId ? "location" : undefined}
+                                aria-label={entry.page === null ? entry.title : `${entry.title}，第 ${entry.page} 页`}
+                                title={entry.page === null ? entry.title : `${entry.title} · 第 ${entry.page} 页`}
+                                on:click={() => entry.page !== null && jumpToIndexedPage(entry.page)}
+                            >
+                                <span class="min-w-0 flex-1 truncate">{entry.title}</span>
+                                {#if entry.page !== null}
+                                    <span class="max-w-16 shrink-0 truncate text-[0.6875rem] font-semibold tabular-nums text-30">
+                                        {pageDisplayLabel(entry.page)}
+                                    </span>
+                                {/if}
+                            </button>
+                        {/each}
+                    </nav>
+                {:else}
+                    <div class="flex h-32 flex-col items-center justify-center px-4 text-center text-50">
+                        <Icon icon="material-symbols:search-off-rounded" width="26" />
+                        <p class="mt-2 text-sm">没有匹配的章节</p>
+                    </div>
+                {/if}
+            {:else}
+                {#if documentIndexError}
+                    <p class="mb-2 rounded-md bg-red-500/10 px-3 py-2 text-xs text-red-500" role="status">
+                        {documentIndexError}
+                    </p>
+                {:else if !documentIndexLoading && !hasOutline}
+                    <p class="mb-2 px-2 py-1 text-xs text-40">未检测到书签目录</p>
+                {/if}
+
+                {#if filteredPageNumbers.length > 0}
+                    <nav aria-label="PDF 页码索引" class="grid grid-cols-4 gap-1.5 sm:grid-cols-5">
+                        {#each filteredPageNumbers as number (number)}
+                            <button
+                                type="button"
+                                class={`h-10 min-w-0 rounded-md px-1 text-xs font-semibold tabular-nums transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--primary)] ${number === pageNumber ? "bg-[var(--primary)] text-white" : "bg-[var(--btn-regular-bg)] text-75 hover:text-[var(--primary)]"}`}
+                                aria-current={number === pageNumber ? "page" : undefined}
+                                aria-label={`第 ${number} 页`}
+                                title={`第 ${number} 页${pageDisplayLabel(number) !== String(number) ? ` · ${pageDisplayLabel(number)}` : ""}`}
+                                on:click={() => jumpToIndexedPage(number)}
+                            >
+                                <span class="block truncate">{pageDisplayLabel(number)}</span>
+                            </button>
+                        {/each}
+                    </nav>
+                {:else}
+                    <div class="flex h-32 flex-col items-center justify-center px-4 text-center text-50">
+                        <Icon icon="material-symbols:search-off-rounded" width="26" />
+                        <p class="mt-2 text-sm">没有匹配的页码</p>
+                    </div>
+                {/if}
+            {/if}
+            {/if}
+        </div>
+
+        <div class="flex min-h-11 shrink-0 items-center justify-between border-t border-black/5 px-4 text-xs text-40 dark:border-white/10">
+            <span>第 {pageNumber} / {pageCount} 页</span>
+            <span class="font-semibold tabular-nums text-50">{readingPercent}%</span>
+        </div>
     </div>
 
     {#if resumeNotice}
