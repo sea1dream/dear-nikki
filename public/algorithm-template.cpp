@@ -5,9 +5,9 @@
 #include <ext/pb_ds/tree_policy.hpp>
 using namespace std;
 
-// 使用 GCC 扩展（bits、PBDS、__int128 和 __builtin_*），请选 GNU++17 或更高。
-#if __cplusplus < 201703L
-#error "This template requires GNU C++17 or later."
+// 面向洛谷 GCC 15.1 / C++23；同时使用 bits、PBDS、__int128 等 GCC 扩展。
+#if __cplusplus < 202302L
+#error "This template requires C++23 or later."
 #endif
 
 // #include <boost/multiprecision/cpp_int.hpp>
@@ -82,10 +82,11 @@ struct custom_hash {
   }
 
  public:
-  template <typename T,
-            std::enable_if_t<(std::is_integral_v<T> || std::is_enum_v<T>) &&
-                                 sizeof(T) <= sizeof(u64),
-                             int> = 0>
+  using is_transparent = void;
+
+  template <typename T>
+    requires((std::is_integral_v<T> || std::is_enum_v<T>) &&
+             sizeof(T) <= sizeof(u64))
   std::size_t operator()(T value) const noexcept {
     return static_cast<std::size_t>(mix(static_cast<u64>(value)));
   }
@@ -106,7 +107,8 @@ struct custom_hash {
   std::size_t operator()(std::string_view value) const noexcept {
     u64 result = splitmix64(
         seed() ^ (static_cast<u64>(value.size()) + 0x9e3779b97f4a7c15ULL));
-    for (unsigned char byte : value) {
+    for (const char character : value) {
+      const auto byte = static_cast<unsigned char>(character);
       result =
           splitmix64(result ^ (static_cast<u64>(byte) + 0x9e3779b97f4a7c15ULL));
     }
@@ -126,10 +128,12 @@ struct custom_hash {
 };
 
 template <typename Key>
-using safe_unordered_set = std::unordered_set<Key, custom_hash>;
+using safe_unordered_set =
+    std::unordered_set<Key, custom_hash, std::equal_to<>>;
 
 template <typename Key, typename Value>
-using safe_unordered_map = std::unordered_map<Key, Value, custom_hash>;
+using safe_unordered_map =
+    std::unordered_map<Key, Value, custom_hash, std::equal_to<>>;
 
 template <typename HashTable>
 void reserve_hash(HashTable& table, std::size_t expected_size) {
@@ -137,7 +141,7 @@ void reserve_hash(HashTable& table, std::size_t expected_size) {
   table.reserve(expected_size);
 }
 
-// PBDS 顺序统计树（GCC 扩展，洛谷选择 GNU++17/20 时可用）
+// PBDS 顺序统计树（GCC 扩展，洛谷 C++23 可用）
 template <typename Key, typename Compare = std::less<Key>>
 using ordered_set =
     __gnu_pbds::tree<Key, __gnu_pbds::null_type, Compare,
@@ -146,16 +150,36 @@ using ordered_set =
 
 // 支持重复值的顺序统计树。不要用 less_equal 伪造 multiset：
 // less_equal 不是严格弱序，会破坏 PBDS 的查找、排名和删除。
-template <typename T>
+template <typename T, typename Compare = std::less<T>>
+  requires std::strict_weak_order<Compare, const T&, const T&>
 class ordered_multiset {
   using key_type = std::pair<T, u64>;
-  using tree_type = ordered_set<key_type>;
+
+  struct key_compare {
+    [[no_unique_address]] Compare compare;
+
+    bool operator()(const key_type& left, const key_type& right) const {
+      if (std::invoke(compare, left.first, right.first)) return true;
+      if (std::invoke(compare, right.first, left.first)) return false;
+      return left.second < right.second;
+    }
+  };
+
+  using tree_type = ordered_set<key_type, key_compare>;
 
  public:
   using size_type = typename tree_type::size_type;
+  using value_compare = Compare;
 
-  bool empty() const { return tree_.empty(); }
-  size_type size() const { return tree_.size(); }
+  ordered_multiset()
+    requires std::default_initializable<Compare>
+      : ordered_multiset(Compare{}) {}
+
+  explicit ordered_multiset(Compare compare)
+      : key_compare_{std::move(compare)}, tree_(key_compare_) {}
+
+  [[nodiscard]] bool empty() const { return tree_.empty(); }
+  [[nodiscard]] size_type size() const { return tree_.size(); }
 
   void clear() {
     tree_.clear();
@@ -163,38 +187,50 @@ class ordered_multiset {
   }
 
   void insert(const T& value) {
-    assert(next_id_ != std::numeric_limits<u64>::max());
-    tree_.insert({value, next_id_++});
+    if (next_id_ == std::numeric_limits<u64>::max()) [[unlikely]] {
+      throw std::overflow_error("ordered_multiset: insertion id exhausted");
+    }
+    if (!tree_.insert({value, next_id_}).second) [[unlikely]] {
+      throw std::logic_error(
+          "ordered_multiset: comparator is not a strict weak ordering");
+    }
+    ++next_id_;
   }
 
-  // 删除任意一个等于 value 的元素；成功时返回 true。
-  bool erase_one(const T& value) {
+  // 按 Compare 的等价关系删除任意一个 value；成功时返回 true。
+  [[nodiscard]] bool erase_one(const T& value) {
     auto it = tree_.lower_bound({value, 0});
-    if (it == tree_.end() || it->first != value) return false;
+    if (it == tree_.end() || !equivalent(it->first, value)) return false;
     tree_.erase(it);
     return true;
   }
 
-  size_type count_less(const T& value) const {
+  [[nodiscard]] size_type count_less(const T& value) const {
     return tree_.order_of_key({value, 0});
   }
 
-  size_type count_less_equal(const T& value) const {
+  [[nodiscard]] size_type count_less_equal(const T& value) const {
     return tree_.order_of_key({value, std::numeric_limits<u64>::max()});
   }
 
-  size_type count(const T& value) const {
+  [[nodiscard]] size_type count(const T& value) const {
     return count_less_equal(value) - count_less(value);
   }
 
   // 返回第 k 小的值（k 从 0 开始）；越界时返回 nullopt。
-  std::optional<T> kth(size_type k) const {
+  [[nodiscard]] std::optional<T> kth(size_type k) const {
     auto it = tree_.find_by_order(k);
     if (it == tree_.end()) return std::nullopt;
     return it->first;
   }
 
  private:
+  [[nodiscard]] bool equivalent(const T& left, const T& right) const {
+    return !std::invoke(key_compare_.compare, left, right) &&
+           !std::invoke(key_compare_.compare, right, left);
+  }
+
+  key_compare key_compare_;
   tree_type tree_;
   u64 next_id_ = 0;
 };
@@ -216,11 +252,11 @@ constexpr auto lowbit(T x) noexcept {
   return u & (U{0} - u);
 }
 
-// GCC 位运算内置函数的安全封装（支持不超过 64 位的整数）
+// <bit> 的安全封装（支持不超过 64 位的整数，并统一处理零值语义）
 namespace bitop {
 
 template <typename T>
-constexpr auto to_unsigned(T x) noexcept {
+[[nodiscard]] constexpr auto to_unsigned(T x) noexcept {
   using V = std::remove_cv_t<T>;
   static_assert(std::is_integral_v<V> && !std::is_same_v<V, bool>);
 
@@ -230,79 +266,73 @@ constexpr auto to_unsigned(T x) noexcept {
   return static_cast<U>(x);
 }
 
-// 二进制中 1 的个数：__builtin_popcountll
+// 二进制中 1 的个数。
 template <typename T>
-constexpr int popcount(T x) noexcept {
+[[nodiscard]] constexpr int popcount(T x) noexcept {
   const auto u = to_unsigned(x);
-  return __builtin_popcountll(static_cast<unsigned long long>(u));
+  return std::popcount(u);
 }
 
-// 前导零个数：与 __builtin_clz/clzll 不同，x == 0 时返回类型位数
+// 前导零个数；x == 0 时返回类型位数。
 template <typename T>
-constexpr int countl_zero(T x) noexcept {
+[[nodiscard]] constexpr int countl_zero(T x) noexcept {
   const auto u = to_unsigned(x);
-  using U = decltype(u);
-  constexpr int width = std::numeric_limits<U>::digits;
-  constexpr int ull_width = std::numeric_limits<unsigned long long>::digits;
-
-  if (u == 0) return width;
-  return __builtin_clzll(static_cast<unsigned long long>(u)) -
-         (ull_width - width);
+  return std::countl_zero(u);
 }
 
-// 后缀零个数：与 __builtin_ctz/ctzll 不同，x == 0 时返回类型位数
+// 后缀零个数；x == 0 时返回类型位数。
 template <typename T>
-constexpr int countr_zero(T x) noexcept {
+[[nodiscard]] constexpr int countr_zero(T x) noexcept {
   const auto u = to_unsigned(x);
-  using U = decltype(u);
-  constexpr int width = std::numeric_limits<U>::digits;
-
-  if (u == 0) return width;
-  return __builtin_ctzll(static_cast<unsigned long long>(u));
+  return std::countr_zero(u);
 }
 
 // 最低位 1 的位置（从 1 开始）；x == 0 时返回 0，等价于 __builtin_ffsll
 template <typename T>
-constexpr int first_one(T x) noexcept {
+[[nodiscard]] constexpr int first_one(T x) noexcept {
   const auto u = to_unsigned(x);
   return u == 0 ? 0 : countr_zero(u) + 1;
 }
 
 template <typename T>
-constexpr int bit_width(T x) noexcept {
+[[nodiscard]] constexpr int bit_width(T x) noexcept {
   const auto u = to_unsigned(x);
-  using U = decltype(u);
-  return std::numeric_limits<U>::digits - countl_zero(u);
+  return std::bit_width(u);
 }
 
 // 最高/最低位 1 的下标（从 0 开始）；x == 0 时返回 -1
 template <typename T>
-constexpr int msb_index(T x) noexcept {
+[[nodiscard]] constexpr int msb_index(T x) noexcept {
   return bit_width(x) - 1;
 }
 
 template <typename T>
-constexpr int lsb_index(T x) noexcept {
+[[nodiscard]] constexpr int lsb_index(T x) noexcept {
   const auto u = to_unsigned(x);
   return u == 0 ? -1 : countr_zero(u);
 }
 
 template <typename T>
-constexpr bool has_single_bit(T x) noexcept {
-  return popcount(x) == 1;
+[[nodiscard]] constexpr bool has_single_bit(T x) noexcept {
+  return std::has_single_bit(to_unsigned(x));
 }
 
 template <typename T>
-constexpr int parity(T x) noexcept {
-  const auto u = to_unsigned(x);
-  return __builtin_parityll(static_cast<unsigned long long>(u));
+[[nodiscard]] constexpr int parity(T x) noexcept {
+  return popcount(x) & 1;
 }
 
-constexpr uint16_t bswap16(uint16_t x) noexcept { return __builtin_bswap16(x); }
+[[nodiscard]] constexpr uint16_t bswap16(uint16_t x) noexcept {
+  return std::byteswap(x);
+}
 
-constexpr uint32_t bswap32(uint32_t x) noexcept { return __builtin_bswap32(x); }
+[[nodiscard]] constexpr uint32_t bswap32(uint32_t x) noexcept {
+  return std::byteswap(x);
+}
 
-constexpr uint64_t bswap64(uint64_t x) noexcept { return __builtin_bswap64(x); }
+[[nodiscard]] constexpr uint64_t bswap64(uint64_t x) noexcept {
+  return std::byteswap(x);
+}
 
 }  // namespace bitop
 
@@ -310,21 +340,21 @@ constexpr uint64_t bswap64(uint64_t x) noexcept { return __builtin_bswap64(x); }
 namespace checked {
 
 template <typename A, typename B, typename R>
-constexpr bool add(A a, B b, R& result) noexcept {
+[[nodiscard]] constexpr bool add(A a, B b, R& result) noexcept {
   static_assert(std::is_integral_v<A> && std::is_integral_v<B> &&
                 std::is_integral_v<R> && !std::is_same_v<R, bool>);
   return __builtin_add_overflow(a, b, &result);
 }
 
 template <typename A, typename B, typename R>
-constexpr bool sub(A a, B b, R& result) noexcept {
+[[nodiscard]] constexpr bool sub(A a, B b, R& result) noexcept {
   static_assert(std::is_integral_v<A> && std::is_integral_v<B> &&
                 std::is_integral_v<R> && !std::is_same_v<R, bool>);
   return __builtin_sub_overflow(a, b, &result);
 }
 
 template <typename A, typename B, typename R>
-constexpr bool mul(A a, B b, R& result) noexcept {
+[[nodiscard]] constexpr bool mul(A a, B b, R& result) noexcept {
   static_assert(std::is_integral_v<A> && std::is_integral_v<B> &&
                 std::is_integral_v<R> && !std::is_same_v<R, bool>);
   return __builtin_mul_overflow(a, b, &result);
@@ -537,15 +567,15 @@ auto make_v(size_t n, Args... args) {
 // chmax(best, 200LL);                 // best = 200
 // 注意参数类型必须一致，例如 i64 变量搭配 3LL 或 i64{3}。
 
-// 随机盐哈希使用示例（C++17 查询用 find，不用 C++20 的 contains）：
+// 随机盐哈希使用示例（C++23 可用 contains；string 支持 string_view 异构查询）：
 // safe_unordered_set<i64> seen;
 // reserve_hash(seen, n);  // 已知最多插入 n 个元素时，先预留容量。
 // seen.insert(x);
-// bool exists = seen.find(x) != seen.end();
+// bool exists = seen.contains(x);
 // seen.erase(x);
 //
 // safe_unordered_set<pii> edges;            // pair 可直接作为键
-// safe_unordered_set<string> names;         // string 会逐字节带盐哈希
+// safe_unordered_set<string> names;         // 可用 names.contains(string_view)
 // safe_unordered_map<pii, i64> edge_weight; // map 同理
 // unordered_set<i64, custom_hash> raw;      // 也可给标准容器显式传哈希
 //
@@ -578,29 +608,46 @@ auto make_v(size_t n, Args... args) {
 // // 前驱的 0-based 位置：ms.count_less(x) - 1
 // // 后继的 0-based 位置：ms.count_less_equal(x)
 
-// 64 位安全模乘；要求 mod != 0。
-constexpr u64 mul_mod(u64 a, u64 b, u64 mod) noexcept {
-  assert(mod != 0);
+// 已验证模数后的热路径内核；仅供本模板内部使用。
+namespace mod_arithmetic_detail {
+
+[[nodiscard]] constexpr u64 mul_unchecked(u64 a, u64 b, u64 mod) noexcept {
   return static_cast<u64>(static_cast<u128>(a) * b % mod);
 }
 
-// 快速幂计算 (a^b) % mod；要求 mod != 0。
-// 参数使用 u64，乘法使用 u128 中间值，支持完整 u64 范围。
-constexpr u64 quick_power(u64 a, u64 b, u64 mod) noexcept {
-  assert(mod != 0);
+[[nodiscard]] constexpr u64 power_unchecked(u64 a, u64 b, u64 mod) noexcept {
   u64 res = 1 % mod;
   a %= mod;
   while (b > 0) {
-    if (b & 1) res = mul_mod(res, a, mod);
-    a = mul_mod(a, a, mod);
+    if (b & 1) res = mul_unchecked(res, a, mod);
+    a = mul_unchecked(a, a, mod);
     b >>= 1;
   }
   return res;
 }
 
+}  // namespace mod_arithmetic_detail
+
+// 64 位安全模乘。mod == 0 时抛 invalid_argument；合法路径只有一次分支。
+[[nodiscard]] constexpr u64 mul_mod(u64 a, u64 b, u64 mod) {
+  if (mod == 0) [[unlikely]] {
+    throw std::invalid_argument("mul_mod: modulus must be non-zero");
+  }
+  return mod_arithmetic_detail::mul_unchecked(a, b, mod);
+}
+
+// 快速幂计算 (a^b) % mod。mod == 0 时抛 invalid_argument。
+// 参数使用 u64，乘法使用 u128 中间值，支持完整 u64 范围；循环内不重复检查。
+[[nodiscard]] constexpr u64 quick_power(u64 a, u64 b, u64 mod) {
+  if (mod == 0) [[unlikely]] {
+    throw std::invalid_argument("quick_power: modulus must be non-zero");
+  }
+  return mod_arithmetic_detail::power_unchecked(a, b, mod);
+}
+
 // 确定性 Miller-Rabin 素性测试，适用于完整 u64 范围。
 // 复杂度 O(7 log n)，基底集合不能随意删减。
-bool miller_rabin(u64 n) noexcept {
+[[nodiscard]] bool miller_rabin(u64 n) noexcept {
   if (n < 2) return false;
   static constexpr u64 small_primes[] = {2,  3,  5,  7,  11, 13,
                                          17, 19, 23, 29, 31, 37};
@@ -619,12 +666,12 @@ bool miller_rabin(u64 n) noexcept {
                                   450'775, 9'780'504, 1'795'265'022};
   for (u64 a : bases) {
     if (a % n == 0) continue;
-    u64 x = quick_power(a, d, n);
+    u64 x = mod_arithmetic_detail::power_unchecked(a, d, n);
     if (x == 1 || x == n - 1) continue;
 
     bool reached_minus_one = false;
     for (int r = 1; r < s; r++) {
-      x = mul_mod(x, x, n);
+      x = mod_arithmetic_detail::mul_unchecked(x, x, n);
       if (x == n - 1) {
         reached_minus_one = true;
         break;
@@ -636,11 +683,11 @@ bool miller_rabin(u64 n) noexcept {
 }
 
 // 质数模数下的阶乘、逆阶乘、排列数和组合数。
-// ensure(n) 按需扩容到 n；扩容总复杂度 O(新增长度)，已预处理查询 O(1)。
+// ensure(n) 单次最坏 O(n)；对单调增大的 n，总计算量摊还 O(max_n)，查询 O(1)。
 // P/C 的阶乘表公式要求 0 <= n < modulus；n >= modulus 时应按题使用
 // Lucas 定理或其他算法，不能继续套用阶乘与逆阶乘公式。
 // 构造时会验证模数；不满足条件会抛出 invalid_argument/out_of_range。
-// 两张 u64 表约占用 16 * (prepared() + 1) 字节。
+// 两张表的有效数据占 16 * (prepared() + 1) 字节，实际容量可能略大。
 class PrimeComb {
  public:
   explicit PrimeComb(u64 modulus, u64 initial_n = 0)
@@ -651,9 +698,9 @@ class PrimeComb {
     ensure(initial_n);
   }
 
-  u64 modulus() const noexcept { return modulus_; }
+  [[nodiscard]] u64 modulus() const noexcept { return modulus_; }
 
-  u64 prepared() const noexcept {
+  [[nodiscard]] u64 prepared() const noexcept {
     return static_cast<u64>(factorial_.size() - 1);
   }
 
@@ -668,8 +715,13 @@ class PrimeComb {
     }
 
     const size_t old_size = factorial_.size();
-    factorial_.resize(target + 1);
-    inverse_factorial_.resize(target + 1);
+    const size_t required_size = target + 1;
+
+    // 先让两张表都取得足够容量，再同时改变 size。第二次 reserve 即使抛出，
+    // 两张表的有效长度和内容仍保持一致；之后对 u64 的 resize 不再分配内存。
+    reserve_tables(required_size);
+    factorial_.resize(required_size);
+    inverse_factorial_.resize(required_size);
 
     for (size_t i = old_size; i <= target; ++i) {
       const u64 x = static_cast<u64>(i);
@@ -682,56 +734,86 @@ class PrimeComb {
 
         // inv(r) = (r-1)! / r!
         const size_t r = static_cast<size_t>(remainder);
-        const u64 inverse_r =
-            mul_mod(factorial_[r - 1], inverse_factorial_[r], modulus_);
-        const u64 term = mul_mod(modulus_ / x, inverse_r, modulus_);
+        const u64 inverse_r = mod_arithmetic_detail::mul_unchecked(
+            factorial_[r - 1], inverse_factorial_[r], modulus_);
+        const u64 term = mod_arithmetic_detail::mul_unchecked(
+            modulus_ / x, inverse_r, modulus_);
         assert(term != 0);
         inverse_x = modulus_ - term;
       }
 
-      factorial_[i] = mul_mod(factorial_[i - 1], x, modulus_);
-      inverse_factorial_[i] =
-          mul_mod(inverse_factorial_[i - 1], inverse_x, modulus_);
+      factorial_[i] =
+          mod_arithmetic_detail::mul_unchecked(factorial_[i - 1], x, modulus_);
+      inverse_factorial_[i] = mod_arithmetic_detail::mul_unchecked(
+          inverse_factorial_[i - 1], inverse_x, modulus_);
     }
   }
 
   // 返回 n! mod modulus。n >= modulus 时结果必为 0。
-  u64 factorial(u64 n) {
+  [[nodiscard]] u64 factorial(u64 n) {
     if (n >= modulus_) return 0;
     ensure(n);
     return factorial_[static_cast<size_t>(n)];
   }
 
   // 返回 (n!)^(-1) mod modulus；仅在 n < modulus 时存在。
-  u64 inverse_factorial(u64 n) {
+  [[nodiscard]] u64 inverse_factorial(u64 n) {
     ensure(n);
     return inverse_factorial_[static_cast<size_t>(n)];
   }
 
   // P(n, k) = n! / (n-k)!
-  u64 P(u64 n, u64 k) {
+  [[nodiscard]] u64 P(u64 n, u64 k) {
     if (k > n) return 0;
     ensure(n);
 
     const size_t nn = static_cast<size_t>(n);
     const size_t nk = static_cast<size_t>(n - k);
-    return mul_mod(factorial_[nn], inverse_factorial_[nk], modulus_);
+    return mod_arithmetic_detail::mul_unchecked(
+        factorial_[nn], inverse_factorial_[nk], modulus_);
   }
 
   // C(n, k) = n! / (k!(n-k)!)
-  u64 C(u64 n, u64 k) {
+  [[nodiscard]] u64 C(u64 n, u64 k) {
     if (k > n) return 0;
     ensure(n);
 
     const size_t nn = static_cast<size_t>(n);
     const size_t kk = static_cast<size_t>(k);
     const size_t nk = static_cast<size_t>(n - k);
-    const u64 denominator =
-        mul_mod(inverse_factorial_[kk], inverse_factorial_[nk], modulus_);
-    return mul_mod(factorial_[nn], denominator, modulus_);
+    const u64 denominator = mod_arithmetic_detail::mul_unchecked(
+        inverse_factorial_[kk], inverse_factorial_[nk], modulus_);
+    return mod_arithmetic_detail::mul_unchecked(factorial_[nn], denominator,
+                                                modulus_);
   }
 
  private:
+  void reserve_tables(size_t required_size) {
+    const size_t max_capacity =
+        std::min(factorial_.max_size(), inverse_factorial_.max_size());
+    if (required_size > max_capacity) {
+      throw std::length_error("PrimeComb: table is too large");
+    }
+    if (factorial_.capacity() >= required_size &&
+        inverse_factorial_.capacity() >= required_size) {
+      return;
+    }
+
+    const size_t current_capacity =
+        std::max(factorial_.capacity(), inverse_factorial_.capacity());
+    size_t new_capacity = current_capacity;
+    if (new_capacity < required_size) {
+      const size_t increment = std::max(new_capacity / 2, size_t{1});
+      new_capacity = increment <= max_capacity - new_capacity
+                         ? new_capacity + increment
+                         : max_capacity;
+      new_capacity = std::max(new_capacity, required_size);
+    }
+
+    factorial_.reserve(new_capacity);
+    inverse_factorial_.reserve(new_capacity);
+  }
+
   void require_table_index(u64 n) const {
     if (n >= modulus_) {
       throw std::out_of_range(
@@ -965,9 +1047,9 @@ inline i64 sub_mod(i64 a, i64 b, i64 modulus) noexcept {
   return a >= b ? a - b : modulus - (b - a);
 }
 
-inline int checked_divisibility_transform(const vector<i64>& values,
-                                          const MobiusTable& table,
-                                          i64 modulus) {
+inline size_t checked_divisibility_transform(std::span<const i64> values,
+                                             const MobiusTable& table,
+                                             i64 modulus) {
   if (modulus <= 0) {
     throw std::invalid_argument(
         "divisibility transform: modulus must be positive");
@@ -981,15 +1063,15 @@ inline int checked_divisibility_transform(const vector<i64>& values,
   if (n > static_cast<size_t>(std::numeric_limits<int>::max())) {
     throw std::length_error("divisibility transform: range is too large");
   }
-  if (table.limit < static_cast<int>(n) || table.mu.size() <= n ||
-      table.mertens.size() <= n) {
+  if (table.limit < 0 || static_cast<size_t>(table.limit) < n ||
+      table.mu.size() <= n || table.mertens.size() <= n) {
     throw std::out_of_range(
         "divisibility transform: Mobius table is too small");
   }
-  return static_cast<int>(n);
+  return n;
 }
 
-inline void normalize_from_one(vector<i64>& values, i64 modulus) noexcept {
+inline void normalize_from_one(std::span<i64> values, i64 modulus) noexcept {
   for (size_t i = 1; i < values.size(); ++i) {
     values[i] = normalize_i64_mod(values[i], modulus);
   }
@@ -1002,55 +1084,61 @@ inline void normalize_from_one(vector<i64>& values, i64 modulus) noexcept {
 // sum_{p<=n} floor(n/p) = O(n log log n)，额外空间 O(1)。
 
 // F[x] = sum_{d|x} f[d]。
-inline void divisor_zeta_transform(vector<i64>& values,
+inline void divisor_zeta_transform(std::span<i64> values,
                                    const MobiusTable& table, i64 modulus) {
-  const int n = detail::checked_divisibility_transform(values, table, modulus);
+  const size_t n =
+      detail::checked_divisibility_transform(values, table, modulus);
   detail::normalize_from_one(values, modulus);
   for (int prime : table.primes) {
-    if (prime > n) break;
-    for (int i = 1, end = n / prime; i <= end; ++i) {
-      values[i * prime] =
-          detail::add_mod(values[i * prime], values[i], modulus);
+    const size_t p = static_cast<size_t>(prime);
+    if (p > n) break;
+    for (size_t i = 1, end = n / p; i <= end; ++i) {
+      values[i * p] = detail::add_mod(values[i * p], values[i], modulus);
     }
   }
 }
 
 // f[x] = sum_{d|x} mu[d] * F[x/d]，是 divisor_zeta_transform 的逆。
-inline void divisor_mobius_transform(vector<i64>& values,
+inline void divisor_mobius_transform(std::span<i64> values,
                                      const MobiusTable& table, i64 modulus) {
-  const int n = detail::checked_divisibility_transform(values, table, modulus);
+  const size_t n =
+      detail::checked_divisibility_transform(values, table, modulus);
   detail::normalize_from_one(values, modulus);
   for (int prime : table.primes) {
-    if (prime > n) break;
-    for (int i = n / prime; i >= 1; --i) {
-      values[i * prime] =
-          detail::sub_mod(values[i * prime], values[i], modulus);
+    const size_t p = static_cast<size_t>(prime);
+    if (p > n) break;
+    for (size_t i = n / p; i > 0; --i) {
+      values[i * p] = detail::sub_mod(values[i * p], values[i], modulus);
     }
   }
 }
 
 // F[x] = sum_{x|multiple, multiple<=n} f[multiple]。
-inline void multiple_zeta_transform(vector<i64>& values,
+inline void multiple_zeta_transform(std::span<i64> values,
                                     const MobiusTable& table, i64 modulus) {
-  const int n = detail::checked_divisibility_transform(values, table, modulus);
+  const size_t n =
+      detail::checked_divisibility_transform(values, table, modulus);
   detail::normalize_from_one(values, modulus);
   for (int prime : table.primes) {
-    if (prime > n) break;
-    for (int i = n / prime; i >= 1; --i) {
-      values[i] = detail::add_mod(values[i], values[i * prime], modulus);
+    const size_t p = static_cast<size_t>(prime);
+    if (p > n) break;
+    for (size_t i = n / p; i > 0; --i) {
+      values[i] = detail::add_mod(values[i], values[i * p], modulus);
     }
   }
 }
 
 // f[x] = sum_{k<=n/x} mu[k] * F[x*k]，是 multiple_zeta_transform 的逆。
-inline void multiple_mobius_transform(vector<i64>& values,
+inline void multiple_mobius_transform(std::span<i64> values,
                                       const MobiusTable& table, i64 modulus) {
-  const int n = detail::checked_divisibility_transform(values, table, modulus);
+  const size_t n =
+      detail::checked_divisibility_transform(values, table, modulus);
   detail::normalize_from_one(values, modulus);
   for (int prime : table.primes) {
-    if (prime > n) break;
-    for (int i = 1, end = n / prime; i <= end; ++i) {
-      values[i] = detail::sub_mod(values[i], values[i * prime], modulus);
+    const size_t p = static_cast<size_t>(prime);
+    if (p > n) break;
+    for (size_t i = 1, end = n / p; i <= end; ++i) {
+      values[i] = detail::sub_mod(values[i], values[i * p], modulus);
     }
   }
 }
@@ -1116,7 +1204,8 @@ inline u64 transition(u64 lower, u64 same, size_t n, size_t k, Kind kind,
   const size_t raw_factor = kind == Kind::Second ? k : n - 1;
   const u64 factor = static_cast<u64>(static_cast<u128>(raw_factor) %
                                       static_cast<u128>(modulus));
-  const u64 product = ::mul_mod(same, factor, modulus);
+  const u64 product =
+      ::mod_arithmetic_detail::mul_unchecked(same, factor, modulus);
   return kind == Kind::FirstSigned ? sub_mod(lower, product, modulus)
                                    : add_mod(lower, product, modulus);
 }
@@ -1221,61 +1310,59 @@ class DenseMatrix {
 
  public:
   using value_type = T;
+  using storage_type = std::vector<T>;
 
-  // 行视图允许修改元素，但不暴露 resize/clear，因而不会破坏矩阵形状。
+  // 连续存储；行视图允许修改元素，但不暴露 resize/clear，因而不会破坏形状。
   class RowView {
    public:
-    explicit RowView(vector<T>& row) noexcept : row_(&row) {}
+    explicit RowView(std::span<T> row) noexcept : row_(row) {}
     RowView(const RowView&) noexcept = default;
     RowView& operator=(const RowView&) = delete;
 
-    typename vector<T>::reference operator[](size_t column) const noexcept {
-      return (*row_)[column];
+    T& operator[](size_t column) const noexcept { return row_[column]; }
+    T& at(size_t column) const {
+      if (column >= row_.size()) {
+        throw std::out_of_range("matrix column is out of range");
+      }
+      return row_[column];
     }
-    typename vector<T>::reference at(size_t column) const {
-      return row_->at(column);
-    }
-    typename vector<T>::iterator begin() const noexcept {
-      return row_->begin();
-    }
-    typename vector<T>::iterator end() const noexcept { return row_->end(); }
-    size_t size() const noexcept { return row_->size(); }
+    auto begin() const noexcept { return row_.begin(); }
+    auto end() const noexcept { return row_.end(); }
+    [[nodiscard]] size_t size() const noexcept { return row_.size(); }
+    [[nodiscard]] operator std::span<T>() const noexcept { return row_; }
 
    private:
-    vector<T>* row_;
+    std::span<T> row_;
   };
 
   class ConstRowView {
    public:
-    explicit ConstRowView(const vector<T>& row) noexcept : row_(&row) {}
+    explicit ConstRowView(std::span<const T> row) noexcept : row_(row) {}
     ConstRowView(const ConstRowView&) noexcept = default;
     ConstRowView& operator=(const ConstRowView&) = delete;
 
-    typename vector<T>::const_reference operator[](
-        size_t column) const noexcept {
-      return (*row_)[column];
+    const T& operator[](size_t column) const noexcept { return row_[column]; }
+    const T& at(size_t column) const {
+      if (column >= row_.size()) {
+        throw std::out_of_range("matrix column is out of range");
+      }
+      return row_[column];
     }
-    typename vector<T>::const_reference at(size_t column) const {
-      return row_->at(column);
-    }
-    typename vector<T>::const_iterator begin() const noexcept {
-      return row_->begin();
-    }
-    typename vector<T>::const_iterator end() const noexcept {
-      return row_->end();
-    }
-    size_t size() const noexcept { return row_->size(); }
+    auto begin() const noexcept { return row_.begin(); }
+    auto end() const noexcept { return row_.end(); }
+    [[nodiscard]] size_t size() const noexcept { return row_.size(); }
+    [[nodiscard]] operator std::span<const T>() const noexcept { return row_; }
 
    private:
-    const vector<T>* row_;
+    std::span<const T> row_;
   };
 
   DenseMatrix() = default;
 
   DenseMatrix(size_t rows, size_t columns, const T& value = T{})
-      : rows_(rows), columns_(columns), data_(rows) {
-    for (auto& row : data_) row.assign(columns_, value);
-  }
+      : rows_(rows),
+        columns_(columns),
+        data_(checked_element_count(rows, columns), value) {}
 
   explicit DenseMatrix(vector<vector<T>> values)
       : rows_(values.size()),
@@ -1285,44 +1372,68 @@ class DenseMatrix {
         throw std::invalid_argument("DenseMatrix rows must have equal length");
       }
     }
-    data_ = std::move(values);
+    data_.reserve(checked_element_count(rows_, columns_));
+    for (auto& row : values) {
+      data_.insert(data_.end(), std::make_move_iterator(row.begin()),
+                   std::make_move_iterator(row.end()));
+    }
   }
 
   DenseMatrix(std::initializer_list<std::initializer_list<T>> values)
       : rows_(values.size()),
         columns_(values.size() == 0 ? 0 : values.begin()->size()) {
-    data_.reserve(rows_);
+    data_.reserve(checked_element_count(rows_, columns_));
     for (const auto& row : values) {
       if (row.size() != columns_) {
         throw std::invalid_argument("DenseMatrix rows must have equal length");
       }
-      data_.emplace_back(row);
+      data_.insert(data_.end(), row.begin(), row.end());
     }
   }
 
-  size_t rows() const noexcept { return rows_; }
-  size_t columns() const noexcept { return columns_; }
-  bool empty() const noexcept { return rows_ == 0 || columns_ == 0; }
-
-  RowView operator[](size_t row) noexcept { return RowView(data_[row]); }
-  ConstRowView operator[](size_t row) const noexcept {
-    return ConstRowView(data_[row]);
+  [[nodiscard]] size_t rows() const noexcept { return rows_; }
+  [[nodiscard]] size_t columns() const noexcept { return columns_; }
+  [[nodiscard]] bool empty() const noexcept {
+    return rows_ == 0 || columns_ == 0;
   }
 
-  typename vector<T>::reference at(size_t row, size_t column) {
-    return data_.at(row).at(column);
+  [[nodiscard]] RowView row(size_t index) noexcept {
+    return RowView(std::span<T>(data_).subspan(index * columns_, columns_));
   }
-  typename vector<T>::const_reference at(size_t row, size_t column) const {
-    return data_.at(row).at(column);
+  [[nodiscard]] ConstRowView row(size_t index) const noexcept {
+    return ConstRowView(
+        std::span<const T>(data_).subspan(index * columns_, columns_));
+  }
+  [[nodiscard]] RowView operator[](size_t index) noexcept { return row(index); }
+  [[nodiscard]] ConstRowView operator[](size_t index) const noexcept {
+    return row(index);
   }
 
-  const vector<vector<T>>& data() const noexcept { return data_; }
+  T& at(size_t row_index, size_t column) {
+    if (row_index >= rows_ || column >= columns_) {
+      throw std::out_of_range("matrix index is out of range");
+    }
+    return data_[row_index * columns_ + column];
+  }
+  const T& at(size_t row_index, size_t column) const {
+    if (row_index >= rows_ || column >= columns_) {
+      throw std::out_of_range("matrix index is out of range");
+    }
+    return data_[row_index * columns_ + column];
+  }
+
+  // data() 现在是按行连续的一维存储；row()/operator[] 提供二维访问。
+  [[nodiscard]] const storage_type& data() const noexcept { return data_; }
+  [[nodiscard]] std::span<T> flat_data() noexcept { return data_; }
+  [[nodiscard]] std::span<const T> flat_data() const noexcept { return data_; }
 
   void swap_rows(size_t first, size_t second) {
     if (first >= rows_ || second >= rows_) {
       throw std::out_of_range("matrix row is out of range");
     }
-    data_[first].swap(data_[second]);
+    if (first != second) {
+      std::ranges::swap_ranges(row(first), row(second));
+    }
   }
 
   friend bool operator==(const DenseMatrix& left, const DenseMatrix& right) {
@@ -1335,12 +1446,27 @@ class DenseMatrix {
   }
 
  private:
+  static size_t checked_element_count(size_t rows, size_t columns) {
+    if (columns != 0 && rows > std::numeric_limits<size_t>::max() / columns) {
+      throw std::length_error("matrix element count overflows size_t");
+    }
+    return rows * columns;
+  }
+
   size_t rows_ = 0;
   size_t columns_ = 0;
-  vector<vector<T>> data_;
+  storage_type data_;
 };
 
 namespace detail {
+
+template <typename T>
+concept MatrixInteger =
+    std::integral<std::remove_cv_t<T>> &&
+    (!std::same_as<std::remove_cv_t<T>, bool>) && (sizeof(T) <= sizeof(u64));
+
+template <typename T>
+concept MatrixExponent = MatrixInteger<T>;
 
 template <typename T>
 inline void require_same_shape(const DenseMatrix<T>& left,
@@ -1378,11 +1504,9 @@ inline void require_prime_modulus(u64 modulus) {
   }
 }
 
-template <typename Exponent>
+template <MatrixExponent Exponent>
 constexpr u64 checked_exponent(Exponent exponent) {
   using Value = std::remove_cv_t<Exponent>;
-  static_assert(std::is_integral_v<Value> && !std::is_same_v<Value, bool> &&
-                sizeof(Value) <= sizeof(u64));
   if constexpr (std::is_signed_v<Value>) {
     if (exponent < 0) {
       throw std::invalid_argument("matrix exponent must be non-negative");
@@ -1416,14 +1540,14 @@ constexpr u64 sub_mod(u64 left, u64 right, u64 modulus) noexcept {
 }  // namespace detail
 
 template <typename T>
-DenseMatrix<T> identity(size_t size) {
+[[nodiscard]] DenseMatrix<T> identity(size_t size) {
   DenseMatrix<T> result(size, size);
   for (size_t i = 0; i < size; ++i) result[i][i] = T{1};
   return result;
 }
 
 template <typename T>
-DenseMatrix<T> transpose(const DenseMatrix<T>& value) {
+[[nodiscard]] DenseMatrix<T> transpose(const DenseMatrix<T>& value) {
   DenseMatrix<T> result(value.columns(), value.rows());
   for (size_t row = 0; row < value.rows(); ++row) {
     for (size_t column = 0; column < value.columns(); ++column) {
@@ -1435,40 +1559,45 @@ DenseMatrix<T> transpose(const DenseMatrix<T>& value) {
 
 // 普通运算直接使用 T 的 +、-、*；整数是否溢出由题目数据范围保证。
 template <typename T>
-DenseMatrix<T> add(const DenseMatrix<T>& left, const DenseMatrix<T>& right) {
+[[nodiscard]] DenseMatrix<T> add(const DenseMatrix<T>& left,
+                                 const DenseMatrix<T>& right) {
   detail::require_same_shape(left, right);
   DenseMatrix<T> result(left.rows(), left.columns());
-  for (size_t row = 0; row < left.rows(); ++row) {
-    for (size_t column = 0; column < left.columns(); ++column) {
-      result[row][column] = left[row][column] + right[row][column];
-    }
+  auto output = result.flat_data();
+  const auto left_data = left.flat_data();
+  const auto right_data = right.flat_data();
+  for (size_t i = 0; i < output.size(); ++i) {
+    output[i] = left_data[i] + right_data[i];
   }
   return result;
 }
 
 template <typename T>
-DenseMatrix<T> subtract(const DenseMatrix<T>& left,
-                        const DenseMatrix<T>& right) {
+[[nodiscard]] DenseMatrix<T> subtract(const DenseMatrix<T>& left,
+                                      const DenseMatrix<T>& right) {
   detail::require_same_shape(left, right);
   DenseMatrix<T> result(left.rows(), left.columns());
-  for (size_t row = 0; row < left.rows(); ++row) {
-    for (size_t column = 0; column < left.columns(); ++column) {
-      result[row][column] = left[row][column] - right[row][column];
-    }
+  auto output = result.flat_data();
+  const auto left_data = left.flat_data();
+  const auto right_data = right.flat_data();
+  for (size_t i = 0; i < output.size(); ++i) {
+    output[i] = left_data[i] - right_data[i];
   }
   return result;
 }
 
 template <typename T>
-DenseMatrix<T> multiply(const DenseMatrix<T>& left,
-                        const DenseMatrix<T>& right) {
+[[nodiscard]] DenseMatrix<T> multiply(const DenseMatrix<T>& left,
+                                      const DenseMatrix<T>& right) {
   detail::require_multipliable(left, right);
   DenseMatrix<T> result(left.rows(), right.columns());
   for (size_t row = 0; row < left.rows(); ++row) {
+    auto output = result[row];
+    const auto left_row = left[row];
     for (size_t middle = 0; middle < left.columns(); ++middle) {
+      const auto right_row = right[middle];
       for (size_t column = 0; column < right.columns(); ++column) {
-        result[row][column] =
-            result[row][column] + left[row][middle] * right[middle][column];
+        output[column] = output[column] + left_row[middle] * right_row[column];
       }
     }
   }
@@ -1476,26 +1605,23 @@ DenseMatrix<T> multiply(const DenseMatrix<T>& left,
 }
 
 template <typename T>
-vector<T> multiply_vector(const DenseMatrix<T>& left, const vector<T>& right) {
+[[nodiscard]] vector<T> multiply_vector(const DenseMatrix<T>& left,
+                                        std::span<const T> right) {
   if (left.columns() != right.size()) {
     throw std::invalid_argument("matrix-vector dimensions do not match");
   }
   vector<T> result(left.rows());
   for (size_t row = 0; row < left.rows(); ++row) {
+    const auto left_row = left[row];
     for (size_t column = 0; column < left.columns(); ++column) {
-      result[row] = result[row] + left[row][column] * right[column];
+      result[row] = result[row] + left_row[column] * right[column];
     }
   }
   return result;
 }
 
-template <
-    typename T, typename Exponent,
-    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
-                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
-                         (sizeof(Exponent) <= sizeof(u64)),
-                     int> = 0>
-DenseMatrix<T> power(DenseMatrix<T> base, Exponent exponent) {
+template <typename T, detail::MatrixExponent Exponent>
+[[nodiscard]] DenseMatrix<T> power(DenseMatrix<T> base, Exponent exponent) {
   detail::require_square(base);
   u64 remaining = detail::checked_exponent(exponent);
   DenseMatrix<T> result = identity<T>(base.rows());
@@ -1507,115 +1633,115 @@ DenseMatrix<T> power(DenseMatrix<T> base, Exponent exponent) {
   return result;
 }
 
-inline DenseMatrix<u64> normalize_mod_matrix(DenseMatrix<u64> value,
-                                             u64 modulus) {
+[[nodiscard]] inline DenseMatrix<u64> normalize_mod_matrix(
+    DenseMatrix<u64> value, u64 modulus) {
   detail::require_modulus(modulus);
-  for (size_t row = 0; row < value.rows(); ++row) {
-    for (size_t column = 0; column < value.columns(); ++column) {
-      value[row][column] %= modulus;
-    }
-  }
+  for (u64& element : value.flat_data()) element %= modulus;
   return value;
 }
 
-inline DenseMatrix<u64> normalize_mod_matrix(const DenseMatrix<i64>& value,
-                                             u64 modulus) {
+[[nodiscard]] inline DenseMatrix<u64> normalize_mod_matrix(
+    const DenseMatrix<i64>& value, u64 modulus) {
   detail::require_modulus(modulus);
   DenseMatrix<u64> result(value.rows(), value.columns());
-  for (size_t row = 0; row < value.rows(); ++row) {
-    for (size_t column = 0; column < value.columns(); ++column) {
-      result[row][column] =
-          detail::normalize_mod_value(value[row][column], modulus);
-    }
+  auto output = result.flat_data();
+  const auto input = value.flat_data();
+  for (size_t i = 0; i < output.size(); ++i) {
+    output[i] = detail::normalize_mod_value(input[i], modulus);
   }
   return result;
 }
 
-inline DenseMatrix<u64> identity_mod(size_t size, u64 modulus) {
+[[nodiscard]] inline DenseMatrix<u64> identity_mod(size_t size, u64 modulus) {
   detail::require_modulus(modulus);
   DenseMatrix<u64> result(size, size);
   for (size_t i = 0; i < size; ++i) result[i][i] = 1 % modulus;
   return result;
 }
 
-inline DenseMatrix<u64> add_mod(const DenseMatrix<u64>& left,
-                                const DenseMatrix<u64>& right, u64 modulus) {
+[[nodiscard]] inline DenseMatrix<u64> add_mod(const DenseMatrix<u64>& left,
+                                              const DenseMatrix<u64>& right,
+                                              u64 modulus) {
   detail::require_modulus(modulus);
   detail::require_same_shape(left, right);
   DenseMatrix<u64> result(left.rows(), left.columns());
-  for (size_t row = 0; row < left.rows(); ++row) {
-    for (size_t column = 0; column < left.columns(); ++column) {
-      const u64 a = left[row][column] % modulus;
-      const u64 b = right[row][column] % modulus;
-      result[row][column] = detail::add_mod(a, b, modulus);
-    }
+  auto output = result.flat_data();
+  const auto left_data = left.flat_data();
+  const auto right_data = right.flat_data();
+  for (size_t i = 0; i < output.size(); ++i) {
+    const u64 a = left_data[i] % modulus;
+    const u64 b = right_data[i] % modulus;
+    output[i] = detail::add_mod(a, b, modulus);
   }
   return result;
 }
 
-inline DenseMatrix<u64> subtract_mod(const DenseMatrix<u64>& left,
-                                     const DenseMatrix<u64>& right,
-                                     u64 modulus) {
+[[nodiscard]] inline DenseMatrix<u64> subtract_mod(
+    const DenseMatrix<u64>& left, const DenseMatrix<u64>& right, u64 modulus) {
   detail::require_modulus(modulus);
   detail::require_same_shape(left, right);
   DenseMatrix<u64> result(left.rows(), left.columns());
-  for (size_t row = 0; row < left.rows(); ++row) {
-    for (size_t column = 0; column < left.columns(); ++column) {
-      const u64 a = left[row][column] % modulus;
-      const u64 b = right[row][column] % modulus;
-      result[row][column] = detail::sub_mod(a, b, modulus);
-    }
+  auto output = result.flat_data();
+  const auto left_data = left.flat_data();
+  const auto right_data = right.flat_data();
+  for (size_t i = 0; i < output.size(); ++i) {
+    const u64 a = left_data[i] % modulus;
+    const u64 b = right_data[i] % modulus;
+    output[i] = detail::sub_mod(a, b, modulus);
   }
   return result;
 }
 
 // 使用全局 u128 模乘，支持完整非零 u64 模数。
-inline DenseMatrix<u64> multiply_mod(const DenseMatrix<u64>& left,
-                                     const DenseMatrix<u64>& right,
-                                     u64 modulus) {
+[[nodiscard]] inline DenseMatrix<u64> multiply_mod(
+    const DenseMatrix<u64>& left, const DenseMatrix<u64>& right, u64 modulus) {
   detail::require_modulus(modulus);
   detail::require_multipliable(left, right);
+  const DenseMatrix<u64> normalized_right =
+      normalize_mod_matrix(DenseMatrix<u64>(right), modulus);
   DenseMatrix<u64> result(left.rows(), right.columns());
   for (size_t row = 0; row < left.rows(); ++row) {
+    auto output = result[row];
+    const auto left_row = left[row];
     for (size_t middle = 0; middle < left.columns(); ++middle) {
-      const u64 a = left[row][middle] % modulus;
+      const u64 a = left_row[middle] % modulus;
       if (a == 0) continue;
+      const auto right_row = normalized_right[middle];
       for (size_t column = 0; column < right.columns(); ++column) {
-        const u64 b = right[middle][column] % modulus;
+        const u64 b = right_row[column];
         const u64 product = ::mul_mod(a, b, modulus);
-        result[row][column] =
-            detail::add_mod(result[row][column], product, modulus);
+        output[column] = detail::add_mod(output[column], product, modulus);
       }
     }
   }
   return result;
 }
 
-inline vector<u64> multiply_vector_mod(const DenseMatrix<u64>& left,
-                                       const vector<u64>& right, u64 modulus) {
+[[nodiscard]] inline vector<u64> multiply_vector_mod(
+    const DenseMatrix<u64>& left, std::span<const u64> right, u64 modulus) {
   detail::require_modulus(modulus);
   if (left.columns() != right.size()) {
     throw std::invalid_argument("matrix-vector dimensions do not match");
   }
+  vector<u64> normalized_right(right.size());
+  for (size_t i = 0; i < right.size(); ++i) {
+    normalized_right[i] = right[i] % modulus;
+  }
   vector<u64> result(left.rows());
   for (size_t row = 0; row < left.rows(); ++row) {
+    const auto left_row = left[row];
     for (size_t column = 0; column < left.columns(); ++column) {
-      const u64 product = ::mul_mod(left[row][column] % modulus,
-                                    right[column] % modulus, modulus);
+      const u64 product = ::mul_mod(left_row[column] % modulus,
+                                    normalized_right[column], modulus);
       result[row] = detail::add_mod(result[row], product, modulus);
     }
   }
   return result;
 }
 
-template <
-    typename Exponent,
-    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
-                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
-                         (sizeof(Exponent) <= sizeof(u64)),
-                     int> = 0>
-DenseMatrix<u64> power_mod(DenseMatrix<u64> base, Exponent exponent,
-                           u64 modulus) {
+template <detail::MatrixExponent Exponent>
+[[nodiscard]] DenseMatrix<u64> power_mod(DenseMatrix<u64> base,
+                                         Exponent exponent, u64 modulus) {
   detail::require_modulus(modulus);
   detail::require_square(base);
   u64 remaining = detail::checked_exponent(exponent);
@@ -1630,7 +1756,8 @@ DenseMatrix<u64> power_mod(DenseMatrix<u64> base, Exponent exponent,
 }
 
 // 质数模高斯消元求行列式，空矩阵行列式定义为 1。
-inline u64 determinant_mod_prime(DenseMatrix<u64> value, u64 prime_modulus) {
+[[nodiscard]] inline u64 determinant_mod_prime(DenseMatrix<u64> value,
+                                               u64 prime_modulus) {
   detail::require_prime_modulus(prime_modulus);
   detail::require_square(value);
   value = normalize_mod_matrix(std::move(value), prime_modulus);
@@ -1708,11 +1835,114 @@ constexpr u64 normalize_integer_mod(Integer value, u64 modulus) noexcept {
 
 }  // namespace detail
 
+// 浮点数值秩：先按每行最大绝对值归一化，再做列主元前向消元。
+// epsilon 是相对单行尺度的阈值；病态矩阵的数值秩取决于该阈值。
+[[nodiscard]] inline size_t rank_real(
+    DenseMatrix<f80> value,
+    f80 epsilon = 64 * std::numeric_limits<f80>::epsilon()) {
+  if (!std::isfinite(epsilon) || epsilon < 0 || epsilon >= 1) {
+    throw std::invalid_argument("rank_real: epsilon must be in [0, 1)");
+  }
+  for (size_t row = 0; row < value.rows(); ++row) {
+    auto current = value[row];
+    f80 scale = 0;
+    for (const f80 element : current) {
+      if (!std::isfinite(element)) {
+        throw std::invalid_argument("rank_real: entries must be finite");
+      }
+      scale = std::max(scale, std::abs(element));
+    }
+    if (scale != 0) {
+      for (f80& element : current) element /= scale;
+    }
+  }
+
+  size_t rank = 0;
+  for (size_t column = 0; column < value.columns() && rank < value.rows();
+       ++column) {
+    size_t pivot = rank;
+    for (size_t row = rank + 1; row < value.rows(); ++row) {
+      if (std::abs(value[row][column]) > std::abs(value[pivot][column])) {
+        pivot = row;
+      }
+    }
+    if (std::abs(value[pivot][column]) <= epsilon) continue;
+    value.swap_rows(pivot, rank);
+
+    const f80 pivot_value = value[rank][column];
+    const auto pivot_row = value[rank];
+    for (size_t row = rank + 1; row < value.rows(); ++row) {
+      auto current = value[row];
+      const f80 factor = current[column] / pivot_value;
+      current[column] = 0;
+      for (size_t next = column + 1; next < value.columns(); ++next) {
+        current[next] = std::fma(-factor, pivot_row[next], current[next]);
+        if (!std::isfinite(current[next])) {
+          throw std::overflow_error("rank_real: non-finite arithmetic");
+        }
+      }
+    }
+    ++rank;
+  }
+  return rank;
+}
+
+[[nodiscard]] inline size_t rank_real(
+    const vector<vector<f80>>& value,
+    f80 epsilon = 64 * std::numeric_limits<f80>::epsilon()) {
+  return rank_real(DenseMatrix<f80>(value), epsilon);
+}
+
+// 质数模有限域上的精确秩；只做前向消元，不计算 RREF 或方程解。
+template <detail::MatrixInteger Integer>
+[[nodiscard]] size_t rank_mod_prime(const DenseMatrix<Integer>& input,
+                                    u64 prime_modulus) {
+  detail::require_prime_modulus(prime_modulus);
+  DenseMatrix<u64> value(input.rows(), input.columns());
+  const auto source = input.flat_data();
+  auto destination = value.flat_data();
+  for (size_t i = 0; i < source.size(); ++i) {
+    destination[i] = detail::normalize_integer_mod(source[i], prime_modulus);
+  }
+
+  size_t rank = 0;
+  for (size_t column = 0; column < value.columns() && rank < value.rows();
+       ++column) {
+    size_t pivot = rank;
+    while (pivot < value.rows() && value[pivot][column] == 0) ++pivot;
+    if (pivot == value.rows()) continue;
+    value.swap_rows(pivot, rank);
+
+    const u64 inverse =
+        ::quick_power(value[rank][column], prime_modulus - 2, prime_modulus);
+    const auto pivot_row = value[rank];
+    for (size_t row = rank + 1; row < value.rows(); ++row) {
+      auto current = value[row];
+      if (current[column] == 0) continue;
+      const u64 factor = ::mul_mod(current[column], inverse, prime_modulus);
+      current[column] = 0;
+      for (size_t next = column + 1; next < value.columns(); ++next) {
+        current[next] = detail::sub_mod(
+            current[next], ::mul_mod(factor, pivot_row[next], prime_modulus),
+            prime_modulus);
+      }
+    }
+    ++rank;
+  }
+  return rank;
+}
+
+template <detail::MatrixInteger Integer>
+[[nodiscard]] size_t rank_mod_prime(const vector<vector<Integer>>& value,
+                                    u64 prime_modulus) {
+  return rank_mod_prime(DenseMatrix<Integer>(value), prime_modulus);
+}
+
 // augmented 每行是 n 个系数和最后一个常数，共 n+1 列。
 // 先按每行最大系数缩放，再做绝对值最大主元的 RREF；epsilon 因而是
 // 相对于单个方程尺度的阈值。病态问题仍应按数据误差自行调整 epsilon。
 // m 个方程、n 个未知量的时间复杂度 O(m*n*min(m,n))。
-inline GaussianResult<f80> gaussian_elimination_real(
+[[nodiscard]] inline GaussianResult<f80> gaussian_elimination_real(
     vector<vector<f80>> augmented, size_t variables,
     f80 epsilon = 64 * std::numeric_limits<f80>::epsilon()) {
   detail::require_augmented_shape(augmented, variables);
@@ -1828,12 +2058,8 @@ inline GaussianResult<f80> gaussian_elimination_real(
 
 // 质数模有限域高斯消元。元素可用任意不超过 64 位的非 bool 整数，
 // 负数会自动规范化；模数使用完整 u64 Miller-Rabin 验证。
-template <typename Integer,
-          std::enable_if_t<std::is_integral_v<Integer> &&
-                               !std::is_same_v<Integer, bool> &&
-                               (sizeof(Integer) <= sizeof(u64)),
-                           int> = 0>
-GaussianResult<u64> gaussian_elimination_prime_mod(
+template <detail::MatrixInteger Integer>
+[[nodiscard]] GaussianResult<u64> gaussian_elimination_prime_mod(
     const vector<vector<Integer>>& augmented, size_t variables,
     u64 prime_modulus) {
   detail::require_augmented_shape(augmented, variables);
@@ -2084,13 +2310,29 @@ constexpr i64 tropical_unreachable(TropicalKind kind) noexcept {
   return kind == TropicalKind::MinPlus ? MIN_PLUS_INF : MAX_PLUS_NEG_INF;
 }
 
-inline i64 checked_tropical_sum(i64 left, i64 right, TropicalKind kind) {
+template <TropicalKind Kind>
+concept ValidTropicalKind =
+    Kind == TropicalKind::MinPlus || Kind == TropicalKind::MaxPlus;
+
+template <TropicalKind Kind>
+  requires ValidTropicalKind<Kind>
+constexpr i64 tropical_unreachable() noexcept {
+  if constexpr (Kind == TropicalKind::MinPlus) {
+    return MIN_PLUS_INF;
+  } else {
+    return MAX_PLUS_NEG_INF;
+  }
+}
+
+template <TropicalKind Kind>
+  requires ValidTropicalKind<Kind>
+inline i64 checked_tropical_sum(i64 left, i64 right) {
   const i128 sum = static_cast<i128>(left) + static_cast<i128>(right);
   const i128 lowest = static_cast<i128>(std::numeric_limits<i64>::lowest());
   const i128 highest = static_cast<i128>(std::numeric_limits<i64>::max());
   if (sum < lowest || sum > highest ||
-      (kind == TropicalKind::MinPlus && sum == highest) ||
-      (kind == TropicalKind::MaxPlus && sum == lowest)) {
+      (Kind == TropicalKind::MinPlus && sum == highest) ||
+      (Kind == TropicalKind::MaxPlus && sum == lowest)) {
     throw std::overflow_error(
         "tropical path weight overflows or collides with infinity");
   }
@@ -2099,33 +2341,49 @@ inline i64 checked_tropical_sum(i64 left, i64 right, TropicalKind kind) {
 
 }  // namespace detail
 
-inline DenseMatrix<i64> tropical_identity(size_t size, TropicalKind kind) {
-  detail::require_tropical_kind(kind);
-  DenseMatrix<i64> result(size, size, detail::tropical_unreachable(kind));
+template <TropicalKind Kind>
+  requires detail::ValidTropicalKind<Kind>
+[[nodiscard]] DenseMatrix<i64> tropical_identity(size_t size) {
+  DenseMatrix<i64> result(size, size, detail::tropical_unreachable<Kind>());
   for (size_t i = 0; i < size; ++i) result[i][i] = 0;
   return result;
 }
 
+[[nodiscard]] inline DenseMatrix<i64> tropical_identity(size_t size,
+                                                        TropicalKind kind) {
+  detail::require_tropical_kind(kind);
+  switch (kind) {
+    case TropicalKind::MinPlus:
+      return tropical_identity<TropicalKind::MinPlus>(size);
+    case TropicalKind::MaxPlus:
+      return tropical_identity<TropicalKind::MaxPlus>(size);
+  }
+  std::unreachable();
+}
+
 // Min-Plus: result[i][j] = min_k(left[i][k] + right[k][j])；
 // Max-Plus 将 min 换成 max。有限和用 i128 检查，不做静默饱和。
-inline DenseMatrix<i64> tropical_multiply(const DenseMatrix<i64>& left,
-                                          const DenseMatrix<i64>& right,
-                                          TropicalKind kind) {
-  detail::require_tropical_kind(kind);
+template <TropicalKind Kind>
+  requires detail::ValidTropicalKind<Kind>
+[[nodiscard]] DenseMatrix<i64> tropical_multiply(
+    const DenseMatrix<i64>& left, const DenseMatrix<i64>& right) {
   detail::require_multipliable(left, right);
-  const i64 unreachable = detail::tropical_unreachable(kind);
+  constexpr i64 unreachable = detail::tropical_unreachable<Kind>();
   DenseMatrix<i64> result(left.rows(), right.columns(), unreachable);
   for (size_t row = 0; row < left.rows(); ++row) {
+    auto output = result[row];
+    const auto left_row = left[row];
     for (size_t middle = 0; middle < left.columns(); ++middle) {
-      if (left[row][middle] == unreachable) continue;
+      if (left_row[middle] == unreachable) continue;
+      const auto right_row = right[middle];
       for (size_t column = 0; column < right.columns(); ++column) {
-        if (right[middle][column] == unreachable) continue;
-        const i64 candidate = detail::checked_tropical_sum(
-            left[row][middle], right[middle][column], kind);
-        i64& answer = result[row][column];
+        if (right_row[column] == unreachable) continue;
+        const i64 candidate = detail::checked_tropical_sum<Kind>(
+            left_row[middle], right_row[column]);
+        i64& answer = output[column];
         if (answer == unreachable ||
-            (kind == TropicalKind::MinPlus && candidate < answer) ||
-            (kind == TropicalKind::MaxPlus && candidate > answer)) {
+            (Kind == TropicalKind::MinPlus && candidate < answer) ||
+            (Kind == TropicalKind::MaxPlus && candidate > answer)) {
           answer = candidate;
         }
       }
@@ -2134,56 +2392,70 @@ inline DenseMatrix<i64> tropical_multiply(const DenseMatrix<i64>& left,
   return result;
 }
 
+[[nodiscard]] inline DenseMatrix<i64> tropical_multiply(
+    const DenseMatrix<i64>& left, const DenseMatrix<i64>& right,
+    TropicalKind kind) {
+  detail::require_tropical_kind(kind);
+  switch (kind) {
+    case TropicalKind::MinPlus:
+      return tropical_multiply<TropicalKind::MinPlus>(left, right);
+    case TropicalKind::MaxPlus:
+      return tropical_multiply<TropicalKind::MaxPlus>(left, right);
+  }
+  std::unreachable();
+}
+
 // 邻接矩阵的 k 次幂表示恰好走 k 条边；要求至多 k 条边时，先将对角线
 // 与 0 取 min/max，加入“原地不走”的转移。
-template <
-    typename Exponent,
-    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
-                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
-                         (sizeof(Exponent) <= sizeof(u64)),
-                     int> = 0>
-DenseMatrix<i64> tropical_power(DenseMatrix<i64> base, Exponent exponent,
-                                TropicalKind kind) {
-  detail::require_tropical_kind(kind);
+template <TropicalKind Kind, detail::MatrixExponent Exponent>
+  requires detail::ValidTropicalKind<Kind>
+[[nodiscard]] DenseMatrix<i64> tropical_power(DenseMatrix<i64> base,
+                                              Exponent exponent) {
   detail::require_square(base);
   u64 remaining = detail::checked_exponent(exponent);
-  DenseMatrix<i64> result = tropical_identity(base.rows(), kind);
+  DenseMatrix<i64> result = tropical_identity<Kind>(base.rows());
   while (remaining > 0) {
-    if (remaining & 1) result = tropical_multiply(result, base, kind);
+    if (remaining & 1) result = tropical_multiply<Kind>(result, base);
     remaining >>= 1;
-    if (remaining > 0) base = tropical_multiply(base, base, kind);
+    if (remaining > 0) base = tropical_multiply<Kind>(base, base);
   }
   return result;
 }
 
-inline DenseMatrix<i64> min_plus_multiply(const DenseMatrix<i64>& left,
-                                          const DenseMatrix<i64>& right) {
-  return tropical_multiply(left, right, TropicalKind::MinPlus);
+template <detail::MatrixExponent Exponent>
+[[nodiscard]] DenseMatrix<i64> tropical_power(DenseMatrix<i64> base,
+                                              Exponent exponent,
+                                              TropicalKind kind) {
+  detail::require_tropical_kind(kind);
+  switch (kind) {
+    case TropicalKind::MinPlus:
+      return tropical_power<TropicalKind::MinPlus>(std::move(base), exponent);
+    case TropicalKind::MaxPlus:
+      return tropical_power<TropicalKind::MaxPlus>(std::move(base), exponent);
+  }
+  std::unreachable();
 }
 
-inline DenseMatrix<i64> max_plus_multiply(const DenseMatrix<i64>& left,
-                                          const DenseMatrix<i64>& right) {
-  return tropical_multiply(left, right, TropicalKind::MaxPlus);
+[[nodiscard]] inline DenseMatrix<i64> min_plus_multiply(
+    const DenseMatrix<i64>& left, const DenseMatrix<i64>& right) {
+  return tropical_multiply<TropicalKind::MinPlus>(left, right);
 }
 
-template <
-    typename Exponent,
-    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
-                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
-                         (sizeof(Exponent) <= sizeof(u64)),
-                     int> = 0>
-DenseMatrix<i64> min_plus_power(DenseMatrix<i64> base, Exponent exponent) {
-  return tropical_power(std::move(base), exponent, TropicalKind::MinPlus);
+[[nodiscard]] inline DenseMatrix<i64> max_plus_multiply(
+    const DenseMatrix<i64>& left, const DenseMatrix<i64>& right) {
+  return tropical_multiply<TropicalKind::MaxPlus>(left, right);
 }
 
-template <
-    typename Exponent,
-    std::enable_if_t<std::is_integral_v<std::remove_cv_t<Exponent>> &&
-                         !std::is_same_v<std::remove_cv_t<Exponent>, bool> &&
-                         (sizeof(Exponent) <= sizeof(u64)),
-                     int> = 0>
-DenseMatrix<i64> max_plus_power(DenseMatrix<i64> base, Exponent exponent) {
-  return tropical_power(std::move(base), exponent, TropicalKind::MaxPlus);
+template <detail::MatrixExponent Exponent>
+[[nodiscard]] DenseMatrix<i64> min_plus_power(DenseMatrix<i64> base,
+                                              Exponent exponent) {
+  return tropical_power<TropicalKind::MinPlus>(std::move(base), exponent);
+}
+
+template <detail::MatrixExponent Exponent>
+[[nodiscard]] DenseMatrix<i64> max_plus_power(DenseMatrix<i64> base,
+                                              Exponent exponent) {
+  return tropical_power<TropicalKind::MaxPlus>(std::move(base), exponent);
 }
 
 }  // namespace matrix
@@ -2195,6 +2467,10 @@ DenseMatrix<i64> max_plus_power(DenseMatrix<i64> base, Exponent exponent) {
 //     {{1, 2, 5}, {3, 4, 11}}, 2);  // 最后一列是常数
 // auto mod_system = matrix::gaussian_elimination_prime_mod(
 //     vector<vector<i64>>{{1, 2, 5}, {3, 4, 11}}, 2, 998244353);
+// auto real_rank = matrix::rank_real(
+//     matrix::DenseMatrix<f80>{{1, 2, 3}, {2, 4, 6}});
+// auto mod_rank = matrix::rank_mod_prime(
+//     matrix::DenseMatrix<i64>{{1, 2, 3}, {2, 4, 6}}, 998244353);
 // vector<matrix::UndirectedEdge> graph_edges{{0, 1}, {1, 2}, {2, 0}};
 // auto tree_count =
 //     matrix::count_spanning_trees_undirected(3, graph_edges, 1'000'000'007);
@@ -2202,22 +2478,66 @@ DenseMatrix<i64> max_plus_power(DenseMatrix<i64> base, Exponent exponent) {
 //     n, n, matrix::MIN_PLUS_INF);  // distances[u][v] = 边权
 // auto exactly_k_edges = matrix::min_plus_power(distances, k);
 
-// 二维/三维计算几何。浮点构造统一使用 long double；EPS 应按题目尺度调整。
+// 二维/三维计算几何。浮点构造统一使用 long double；需要分别控制距离、角度
+// 与舍入误差时使用 Tolerance，旧接口的单个 EPS 保持为距离容差。
 namespace geometry {
 
 constexpr f80 DEFAULT_EPS = 1e-12L;
+constexpr f80 DEFAULT_RELATIVE_EPS = 64 * std::numeric_limits<f80>::epsilon();
+
+// distance 是坐标空间中的绝对距离容差；angle 是弧度/方向容差；
+// relative 只用于吸收浮点运算自身的舍入误差。三者分开可避免把“长度 EPS”
+// 直接拿去比较面积或角度。传入旧接口的单个 epsilon 只覆盖 distance。
+struct Tolerance {
+  f80 distance = DEFAULT_EPS;
+  f80 angle = DEFAULT_RELATIVE_EPS;
+  f80 relative = DEFAULT_RELATIVE_EPS;
+
+  constexpr Tolerance() = default;
+  explicit constexpr Tolerance(f80 distance_epsilon)
+      : distance(distance_epsilon) {}
+  constexpr Tolerance(f80 distance_epsilon, f80 angle_epsilon,
+                      f80 relative_epsilon = DEFAULT_RELATIVE_EPS)
+      : distance(distance_epsilon),
+        angle(angle_epsilon),
+        relative(relative_epsilon) {}
+
+  [[nodiscard]] constexpr bool valid() const noexcept {
+    return std::isfinite(distance) && std::isfinite(angle) &&
+           std::isfinite(relative) && distance >= 0 && angle >= 0 &&
+           relative >= 0;
+  }
+};
 
 using ExactInteger = boost::multiprecision::int256_t;
+using ArbitraryInteger = boost::multiprecision::cpp_int;
+
+template <typename T>
+inline constexpr bool is_bounded_integer_coordinate_v =
+    (std::is_integral_v<std::remove_cv_t<T>> &&
+     !std::is_same_v<std::remove_cv_t<T>, bool> && sizeof(T) <= sizeof(u64)) ||
+    std::is_same_v<std::remove_cv_t<T>, ExactInteger>;
 
 template <typename T>
 inline constexpr bool is_exact_integer_coordinate_v =
-    std::is_integral_v<T> || std::is_same_v<std::remove_cv_t<T>, ExactInteger>;
+    is_bounded_integer_coordinate_v<T> ||
+    std::is_same_v<std::remove_cv_t<T>, ArbitraryInteger>;
+
+// GCC 在严格 -std=c++23 下不把 __int128 计入 std::integral；几何坐标明确
+// 限制为标准 64 位以内整数、浮点数或上面的 Boost 整数，避免误走浮点谓词。
+template <typename T>
+concept Coordinate = is_exact_integer_coordinate_v<T> ||
+                     std::floating_point<std::remove_cv_t<T>>;
 
 template <typename T>
-using Calculation = std::conditional_t<is_exact_integer_coordinate_v<T>,
-                                       ExactInteger, long double>;
+using Calculation = std::conditional_t<
+    std::is_same_v<std::remove_cv_t<T>, ExactInteger> ||
+        std::is_same_v<std::remove_cv_t<T>, ArbitraryInteger>,
+    ArbitraryInteger,
+    std::conditional_t<is_exact_integer_coordinate_v<T>, ExactInteger,
+                       long double>>;
 
-template <typename T>
+template <Coordinate T>
 struct Point2 {
   T x{};
   T y{};
@@ -2227,7 +2547,7 @@ struct Point2 {
 
   Point2 operator+() const noexcept { return *this; }
   Point2 operator-() const {
-    if constexpr (std::is_integral_v<T>) {
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
       return {checked_coordinate(-static_cast<Calculation<T>>(x)),
               checked_coordinate(-static_cast<Calculation<T>>(y))};
     } else {
@@ -2236,9 +2556,13 @@ struct Point2 {
   }
 
   Point2& operator+=(const Point2& other) {
-    if constexpr (std::is_integral_v<T>) {
-      x = checked_coordinate(static_cast<Calculation<T>>(x) + other.x);
-      y = checked_coordinate(static_cast<Calculation<T>>(y) + other.y);
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
+      const T next_x =
+          checked_coordinate(static_cast<Calculation<T>>(x) + other.x);
+      const T next_y =
+          checked_coordinate(static_cast<Calculation<T>>(y) + other.y);
+      x = next_x;
+      y = next_y;
     } else {
       x += other.x;
       y += other.y;
@@ -2247,9 +2571,13 @@ struct Point2 {
   }
 
   Point2& operator-=(const Point2& other) {
-    if constexpr (std::is_integral_v<T>) {
-      x = checked_coordinate(static_cast<Calculation<T>>(x) - other.x);
-      y = checked_coordinate(static_cast<Calculation<T>>(y) - other.y);
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
+      const T next_x =
+          checked_coordinate(static_cast<Calculation<T>>(x) - other.x);
+      const T next_y =
+          checked_coordinate(static_cast<Calculation<T>>(y) - other.y);
+      x = next_x;
+      y = next_y;
     } else {
       x -= other.x;
       y -= other.y;
@@ -2258,9 +2586,13 @@ struct Point2 {
   }
 
   Point2& operator*=(T scalar) {
-    if constexpr (std::is_integral_v<T>) {
-      x = checked_coordinate(static_cast<Calculation<T>>(x) * scalar);
-      y = checked_coordinate(static_cast<Calculation<T>>(y) * scalar);
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
+      const T next_x =
+          checked_coordinate(static_cast<Calculation<T>>(x) * scalar);
+      const T next_y =
+          checked_coordinate(static_cast<Calculation<T>>(y) * scalar);
+      x = next_x;
+      y = next_y;
     } else {
       x *= scalar;
       y *= scalar;
@@ -2272,9 +2604,13 @@ struct Point2 {
     if (scalar == T{}) {
       throw std::invalid_argument("Point2 division by zero");
     }
-    if constexpr (std::is_integral_v<T>) {
-      x = checked_coordinate(static_cast<Calculation<T>>(x) / scalar);
-      y = checked_coordinate(static_cast<Calculation<T>>(y) / scalar);
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
+      const T next_x =
+          checked_coordinate(static_cast<Calculation<T>>(x) / scalar);
+      const T next_y =
+          checked_coordinate(static_cast<Calculation<T>>(y) / scalar);
+      x = next_x;
+      y = next_y;
     } else {
       x /= scalar;
       y /= scalar;
@@ -2327,6 +2663,108 @@ struct Point2 {
 
 using Point = Point2<f80>;
 using IPoint = Point2<i64>;
+
+namespace detail {
+
+struct ScaledVector2 {
+  f80 x{};
+  f80 y{};
+  f80 scale{};
+  f80 normalized_length{};
+};
+
+[[nodiscard]] inline ScaledVector2 scale_vector(const Point& value) noexcept {
+  const f80 scale = std::max(std::abs(value.x), std::abs(value.y));
+  if (scale == 0 || !std::isfinite(scale)) return {{}, {}, scale, {}};
+  const f80 x = value.x / scale;
+  const f80 y = value.y / scale;
+  return {x, y, scale, std::hypotl(x, y)};
+}
+
+[[nodiscard]] inline bool vector_is_zero(const Point& value,
+                                         f80 epsilon) noexcept {
+  if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+      !std::isfinite(epsilon) || epsilon < 0) {
+    return true;
+  }
+  const ScaledVector2 scaled = scale_vector(value);
+  if (scaled.scale == 0) return true;
+  // 比较 scale * normalized_length <= epsilon，但不形成可能溢出的乘积。
+  return scaled.scale <= epsilon / scaled.normalized_length;
+}
+
+[[nodiscard]] inline Point normalized_vector(const Point& value, f80 epsilon) {
+  if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+      !std::isfinite(epsilon) || epsilon < 0) {
+    throw std::invalid_argument("cannot normalize a non-finite vector");
+  }
+  const ScaledVector2 scaled = scale_vector(value);
+  if (scaled.scale == 0 || scaled.scale <= epsilon / scaled.normalized_length) {
+    throw std::invalid_argument("cannot normalize a zero vector");
+  }
+  return {scaled.x / scaled.normalized_length,
+          scaled.y / scaled.normalized_length};
+}
+
+[[nodiscard]] inline f80 normalized_cross(
+    const ScaledVector2& first, const ScaledVector2& second) noexcept {
+  return std::fma(first.x, second.y, -first.y * second.x);
+}
+
+[[nodiscard]] inline f80 cross_roundoff_bound(const ScaledVector2& first,
+                                              const ScaledVector2& second,
+                                              f80 relative_epsilon) noexcept {
+  return relative_epsilon *
+         (std::abs(first.x * second.y) + std::abs(first.y * second.x));
+}
+
+[[nodiscard]] inline bool directions_parallel(
+    const Point& first, const Point& second,
+    const Tolerance& tolerance) noexcept {
+  const ScaledVector2 a = scale_vector(first);
+  const ScaledVector2 b = scale_vector(second);
+  if (a.scale == 0 || b.scale == 0 || !std::isfinite(a.scale) ||
+      !std::isfinite(b.scale)) {
+    return true;
+  }
+  const f80 determinant = std::abs(normalized_cross(a, b));
+  const f80 threshold =
+      tolerance.angle * a.normalized_length * b.normalized_length +
+      cross_roundoff_bound(a, b, tolerance.relative);
+  return determinant <= threshold;
+}
+
+[[nodiscard]] inline int floating_orientation(
+    const Point& first, const Point& second, const Point& third,
+    const Tolerance& tolerance) noexcept {
+  const Point edge{second.x - first.x, second.y - first.y};
+  const Point offset{third.x - first.x, third.y - first.y};
+  const ScaledVector2 a = scale_vector(edge);
+  const ScaledVector2 b = scale_vector(offset);
+  if (a.scale == 0 || b.scale == 0) return 0;
+  if (!std::isfinite(a.scale) || !std::isfinite(b.scale)) {
+    const f80 determinant =
+        std::fma(second.x - first.x, third.y - first.y,
+                 -(second.y - first.y) * (third.x - first.x));
+    return (determinant > 0) - (determinant < 0);
+  }
+
+  const f80 determinant = normalized_cross(a, b);
+  const f80 absolute_determinant = std::abs(determinant);
+  if (absolute_determinant <= cross_roundoff_bound(a, b, tolerance.relative)) {
+    return 0;
+  }
+  // |cross(edge, offset)| / |edge| 是点到直线的垂直距离。缩放后比较，
+  // 避免 epsilon（长度）与叉积（长度平方）直接比较。
+  if (tolerance.distance > 0 &&
+      absolute_determinant <=
+          (tolerance.distance / b.scale) * a.normalized_length) {
+    return 0;
+  }
+  return determinant > 0 ? 1 : -1;
+}
+
+}  // namespace detail
 
 // 整数谓词提升到 256 位，覆盖完整 i64 二维叉积、点积与距离平方。
 template <typename T>
@@ -2391,16 +2829,25 @@ int sign(Calculation<T> value, f80 epsilon = DEFAULT_EPS) noexcept {
 
 template <typename T>
 int orientation(const Point2<T>& first, const Point2<T>& second,
+                const Point2<T>& third, const Tolerance& tolerance) noexcept {
+  if constexpr (is_exact_integer_coordinate_v<T>) {
+    return sign<T>(cross(first, second, third), 0);
+  } else {
+    return detail::floating_orientation(
+        {static_cast<f80>(first.x), static_cast<f80>(first.y)},
+        {static_cast<f80>(second.x), static_cast<f80>(second.y)},
+        {static_cast<f80>(third.x), static_cast<f80>(third.y)}, tolerance);
+  }
+}
+
+template <typename T>
+int orientation(const Point2<T>& first, const Point2<T>& second,
                 const Point2<T>& third, f80 epsilon = DEFAULT_EPS) noexcept {
-  return sign<T>(cross(first, second, third), epsilon);
+  return orientation(first, second, third, Tolerance(epsilon));
 }
 
 inline Point unit(const Point& value, f80 epsilon = DEFAULT_EPS) {
-  const f80 magnitude = length(value);
-  if (magnitude <= epsilon) {
-    throw std::invalid_argument("cannot normalize a zero vector");
-  }
-  return value / magnitude;
+  return detail::normalized_vector(value, epsilon);
 }
 
 inline Point perpendicular_left(const Point& value) noexcept {
@@ -2415,13 +2862,10 @@ inline Point rotate(const Point& value, f80 angle) noexcept {
 
 inline f80 angle_between(const Point& first, const Point& second,
                          f80 epsilon = DEFAULT_EPS) {
-  const f80 denominator = length(first) * length(second);
-  if (denominator <= epsilon) {
-    throw std::invalid_argument("angle requires two non-zero vectors");
-  }
-  const f80 cosine =
-      std::clamp(static_cast<f80>(dot(first, second)) / denominator,
-                 static_cast<f80>(-1), static_cast<f80>(1));
+  const Point first_unit = unit(first, epsilon);
+  const Point second_unit = unit(second, epsilon);
+  const f80 cosine = std::clamp(static_cast<f80>(dot(first_unit, second_unit)),
+                                static_cast<f80>(-1), static_cast<f80>(1));
   return std::acos(cosine);
 }
 
@@ -2451,16 +2895,33 @@ class PolarAngleLess {
         return left_distance < right_distance;
       }
     } else {
-      const f80 two_pi = 2 * std::acos(static_cast<f80>(-1));
-      f80 left_angle = std::atan2(ly, lx);
-      f80 right_angle = std::atan2(ry, rx);
-      if (left_angle < 0) left_angle += two_pi;
-      if (right_angle < 0) right_angle += two_pi;
-      if (left_angle != right_angle) return left_angle < right_angle;
-      const f80 left_distance = lx * lx + ly * ly;
-      const f80 right_distance = rx * rx + ry * ry;
-      if (left_distance != right_distance) {
-        return left_distance < right_distance;
+      const int left_half = half(lx, ly);
+      const int right_half = half(rx, ry);
+      if (left_half != right_half) return left_half < right_half;
+
+      const Point left_vector{static_cast<f80>(lx), static_cast<f80>(ly)};
+      const Point right_vector{static_cast<f80>(rx), static_cast<f80>(ry)};
+      const detail::ScaledVector2 left_scaled =
+          detail::scale_vector(left_vector);
+      const detail::ScaledVector2 right_scaled =
+          detail::scale_vector(right_vector);
+      const f80 product = detail::normalized_cross(left_scaled, right_scaled);
+      if (product != 0) return product > 0;
+
+      // 用同一个正比例缩放两向量后比较平方长度，避免 LDBL_MAX 级坐标
+      // 的平方溢出；比较器不使用 EPS，仍保持严格弱序。
+      const f80 common_scale = std::max(left_scaled.scale, right_scaled.scale);
+      if (common_scale > 0) {
+        const f80 left_x = static_cast<f80>(lx) / common_scale;
+        const f80 left_y = static_cast<f80>(ly) / common_scale;
+        const f80 right_x = static_cast<f80>(rx) / common_scale;
+        const f80 right_y = static_cast<f80>(ry) / common_scale;
+        const f80 left_distance = std::fma(left_x, left_x, left_y * left_y);
+        const f80 right_distance =
+            std::fma(right_x, right_x, right_y * right_y);
+        if (left_distance != right_distance) {
+          return left_distance < right_distance;
+        }
       }
     }
     return left < right;
@@ -2486,7 +2947,7 @@ void polar_sort(vector<Point2<T>>& points, Point2<T> origin = {}) {
       }
     }
   }
-  std::sort(points.begin(), points.end(), PolarAngleLess<T>(origin));
+  std::ranges::sort(points, PolarAngleLess<T>(origin));
 }
 
 template <typename T>
@@ -2524,7 +2985,7 @@ namespace detail {
 template <typename T>
 bool same_point(const Point2<T>& left, const Point2<T>& right,
                 f80 epsilon) noexcept {
-  if constexpr (std::is_integral_v<T>) {
+  if constexpr (is_exact_integer_coordinate_v<T>) {
     return left == right;
   } else {
     return distance(left, right) <= epsilon;
@@ -2605,7 +3066,7 @@ struct Line2 {
 inline Line2 line_through(const Point& first, const Point& second,
                           f80 epsilon = DEFAULT_EPS) {
   const Point direction = second - first;
-  if (length(direction) <= epsilon) {
+  if (detail::vector_is_zero(direction, epsilon)) {
     throw std::invalid_argument("a line requires two distinct points");
   }
   return {first, direction};
@@ -2620,24 +3081,40 @@ struct LineIntersectionResult {
 
 inline LineIntersectionResult intersect_lines(const Line2& first,
                                               const Line2& second,
-                                              f80 epsilon = DEFAULT_EPS) {
-  const f80 first_length = length(first.direction);
-  const f80 second_length = length(second.direction);
-  if (first_length <= epsilon || second_length <= epsilon) {
+                                              const Tolerance& tolerance) {
+  if (!tolerance.valid()) {
+    throw std::invalid_argument("invalid geometry tolerance");
+  }
+  if (detail::vector_is_zero(first.direction, tolerance.distance) ||
+      detail::vector_is_zero(second.direction, tolerance.distance)) {
     throw std::invalid_argument("line direction must be non-zero");
   }
-  const f80 denominator = cross(first.direction, second.direction);
-  if (std::abs(denominator) <= epsilon * first_length * second_length) {
-    const f80 offset =
-        std::abs(cross(second.point - first.point, first.direction));
-    return {offset <= epsilon * first_length ? LineIntersectionType::Coincident
-                                             : LineIntersectionType::None,
+  const Point first_direction = unit(first.direction, tolerance.distance);
+  const Point second_direction = unit(second.direction, tolerance.distance);
+  const Point displacement = second.point - first.point;
+  if (!std::isfinite(displacement.x) || !std::isfinite(displacement.y)) {
+    throw std::overflow_error("line point difference overflow");
+  }
+  if (detail::directions_parallel(first_direction, second_direction,
+                                  tolerance)) {
+    const f80 offset = std::abs(cross(displacement, first_direction));
+    return {offset <= tolerance.distance ? LineIntersectionType::Coincident
+                                         : LineIntersectionType::None,
             {}};
   }
-  const f80 parameter =
-      cross(second.point - first.point, second.direction) / denominator;
-  return {LineIntersectionType::SinglePoint,
-          first.point + first.direction * parameter};
+  const f80 denominator = cross(first_direction, second_direction);
+  const f80 parameter = cross(displacement, second_direction) / denominator;
+  const Point intersection = first.point + first_direction * parameter;
+  if (!std::isfinite(intersection.x) || !std::isfinite(intersection.y)) {
+    throw std::overflow_error("line intersection is not representable");
+  }
+  return {LineIntersectionType::SinglePoint, intersection};
+}
+
+inline LineIntersectionResult intersect_lines(const Line2& first,
+                                              const Line2& second,
+                                              f80 epsilon = DEFAULT_EPS) {
+  return intersect_lines(first, second, Tolerance(epsilon));
 }
 
 struct SegmentIntersectionResult {
@@ -2661,19 +3138,20 @@ inline SegmentIntersectionResult intersect_segments(const Segment2<f80>& first,
 
   const auto intersection = intersect_lines(
       line_through(first.first, first.second, epsilon),
-      line_through(second.first, second.second, epsilon), epsilon);
-  assert(intersection.type == LineIntersectionType::SinglePoint);
+      line_through(second.first, second.second, epsilon), Tolerance(epsilon));
+  if (intersection.type != LineIntersectionType::SinglePoint) {
+    // 绝不在 Release 中把默认构造的 (0, 0) 冒充交点。到达这里说明输入的
+    // 尺度已经低于当前浮点方向分辨率，分类结果也应保守地视为无交点。
+    return {};
+  }
   return {type, intersection.point, intersection.point};
 }
 
 inline Point project_onto_line(const Point& point, const Line2& line,
                                f80 epsilon = DEFAULT_EPS) {
-  const f80 denominator = static_cast<f80>(norm_squared(line.direction));
-  if (denominator <= epsilon * epsilon) {
-    throw std::invalid_argument("line direction must be non-zero");
-  }
-  const f80 parameter = dot(point - line.point, line.direction) / denominator;
-  return line.point + line.direction * parameter;
+  const Point direction = unit(line.direction, epsilon);
+  const f80 parameter = dot(point - line.point, direction);
+  return line.point + direction * parameter;
 }
 
 inline Point reflect_across_line(const Point& point, const Line2& line,
@@ -2684,11 +3162,8 @@ inline Point reflect_across_line(const Point& point, const Line2& line,
 
 inline f80 distance_to_line(const Point& point, const Line2& line,
                             f80 epsilon = DEFAULT_EPS) {
-  const f80 denominator = length(line.direction);
-  if (denominator <= epsilon) {
-    throw std::invalid_argument("line direction must be non-zero");
-  }
-  return std::abs(cross(line.direction, point - line.point)) / denominator;
+  const Point direction = unit(line.direction, epsilon);
+  return std::abs(cross(direction, point - line.point));
 }
 
 inline Point closest_point_on_segment(const Point& point,
@@ -2853,18 +3328,17 @@ inline CircleIntersectionResult intersect_circles(const Circle2& first,
 inline optional<Circle2> circumcircle(const Point& first, const Point& second,
                                       const Point& third,
                                       f80 epsilon = DEFAULT_EPS) {
-  const f80 denominator = 2 * cross(first, second, third);
-  if (std::abs(denominator) <= epsilon) return nullopt;
-  const f80 first_norm = norm_squared(first);
-  const f80 second_norm = norm_squared(second);
-  const f80 third_norm = norm_squared(third);
-  const Point center{
-      (first_norm * (second.y - third.y) + second_norm * (third.y - first.y) +
-       third_norm * (first.y - second.y)) /
-          denominator,
-      (first_norm * (third.x - second.x) + second_norm * (first.x - third.x) +
-       third_norm * (second.x - first.x)) /
-          denominator};
+  if (orientation(first, second, third, epsilon) == 0) return nullopt;
+  const Point a = second - first;
+  const Point b = third - first;
+  const f80 denominator = 2 * cross(a, b);
+  const f80 a_squared = norm_squared(a);
+  const f80 b_squared = norm_squared(b);
+  const Point relative_center{
+      (a_squared * b.y - b_squared * a.y) / denominator,
+      (a.x * b_squared - b.x * a_squared) / denominator};
+  const Point center = first + relative_center;
+  if (!std::isfinite(center.x) || !std::isfinite(center.y)) return nullopt;
   return Circle2(center, distance(center, first));
 }
 
@@ -2879,7 +3353,7 @@ Calculation<T> distance_squared(const Point2<T>& first,
 
 template <typename T>
 Point2<T> checked_add_point(const Point2<T>& first, const Point2<T>& second) {
-  if constexpr (std::is_integral_v<T>) {
+  if constexpr (is_bounded_integer_coordinate_v<T>) {
     using C = Calculation<T>;
     const C x = static_cast<C>(first.x) + static_cast<C>(second.x);
     const C y = static_cast<C>(first.y) + static_cast<C>(second.y);
@@ -2897,7 +3371,7 @@ Point2<T> checked_add_point(const Point2<T>& first, const Point2<T>& second) {
 template <typename T>
 Point2<T> checked_subtract_point(const Point2<T>& first,
                                  const Point2<T>& second) {
-  if constexpr (std::is_integral_v<T>) {
+  if constexpr (is_bounded_integer_coordinate_v<T>) {
     using C = Calculation<T>;
     const C x = static_cast<C>(first.x) - static_cast<C>(second.x);
     const C y = static_cast<C>(first.y) - static_cast<C>(second.y);
@@ -3036,14 +3510,17 @@ inline f80 minimum_width(vector<Point> points, f80 epsilon = DEFAULT_EPS) {
   size_t opposite = 1;
   for (size_t i = 0; i < hull.size(); ++i) {
     const size_t next_i = (i + 1) % hull.size();
+    const f80 edge_length = distance(hull[i], hull[next_i]);
     while (true) {
       const size_t next_opposite = (opposite + 1) % hull.size();
       const f80 current_area = cross(hull[i], hull[next_i], hull[opposite]);
       const f80 next_area = cross(hull[i], hull[next_i], hull[next_opposite]);
-      if (next_area <= current_area + epsilon) break;
+      const f80 comparison_tolerance =
+          epsilon * edge_length +
+          DEFAULT_RELATIVE_EPS * (std::abs(current_area) + std::abs(next_area));
+      if (next_area <= current_area + comparison_tolerance) break;
       opposite = next_opposite;
     }
-    const f80 edge_length = distance(hull[i], hull[next_i]);
     answer = std::min(
         answer, cross(hull[i], hull[next_i], hull[opposite]) / edge_length);
   }
@@ -3219,7 +3696,9 @@ namespace detail {
 inline optional<Point> intersect_half_plane_boundaries(
     const HalfPlane& first, const HalfPlane& second) {
   const f80 denominator = cross(first.direction, second.direction);
-  if (denominator == 0) return nullopt;
+  if (directions_parallel(first.direction, second.direction, Tolerance{})) {
+    return nullopt;
+  }
   const f80 parameter =
       cross(second.point - first.point, second.direction) / denominator;
   const Point result = first.point + first.direction * parameter;
@@ -3244,7 +3723,7 @@ inline optional<Point> half_plane_feasible_point(
     for (size_t j = 0; j < i; ++j) {
       const f80 coefficient = dot(half_planes[j].normal, direction);
       const f80 value = dot(half_planes[j].normal, base - half_planes[j].point);
-      if (coefficient == 0) {
+      if (std::abs(coefficient) <= DEFAULT_RELATIVE_EPS) {
         if (value < -epsilon) return nullopt;
         continue;
       }
@@ -3280,9 +3759,9 @@ inline optional<Point> half_plane_feasible_point(
 
 // 存在非零 recession direction 当且仅当全部法向量落在某个闭半圆内。
 inline bool half_plane_recession_is_unbounded(
-    const vector<HalfPlane>& half_planes, f80 epsilon) {
+    const vector<HalfPlane>& half_planes, [[maybe_unused]] f80 epsilon) {
   if (half_planes.empty()) return true;
-  const f80 pi = std::acos(static_cast<f80>(-1));
+  const f80 pi = std::numbers::pi_v<f80>;
   const f80 two_pi = 2 * pi;
   vector<f80> angles;
   angles.reserve(half_planes.size());
@@ -3296,7 +3775,8 @@ inline bool half_plane_recession_is_unbounded(
   for (size_t i = 1; i < angles.size(); ++i) {
     maximum_gap = std::max(maximum_gap, angles[i] - angles[i - 1]);
   }
-  return maximum_gap + epsilon >= pi;
+  // maximum_gap 是角度，不能加坐标空间的 distance epsilon。
+  return maximum_gap + DEFAULT_RELATIVE_EPS >= pi;
 }
 
 // 标准双端队列半平面交。调用方已确认交集有界；正面积时 O(n log n)。
@@ -3308,7 +3788,7 @@ inline optional<vector<Point>> bounded_half_plane_polygon_fast(
     HalfPlane half_plane;
   };
 
-  const f80 two_pi = 2 * std::acos(static_cast<f80>(-1));
+  const f80 two_pi = 2 * std::numbers::pi_v<f80>;
   vector<AngledHalfPlane> ordered;
   ordered.reserve(half_planes.size());
   for (HalfPlane& half_plane : half_planes) {
@@ -3326,7 +3806,8 @@ inline optional<vector<Point>> bounded_half_plane_polygon_fast(
   unique.reserve(ordered.size());
   for (const AngledHalfPlane& item : ordered) {
     if (!unique.empty() &&
-        cross(unique.back().direction, item.half_plane.direction) == 0 &&
+        directions_parallel(unique.back().direction, item.half_plane.direction,
+                            Tolerance{}) &&
         dot(unique.back().direction, item.half_plane.direction) > 0) {
       if (item.half_plane.offset > unique.back().offset) {
         unique.back() = item.half_plane;
@@ -3439,7 +3920,7 @@ inline optional<vector<Point>> half_plane_intersection_bounded(
 // 可行性/有界性分类 O(n^2)，正面积多边形构造 O(n log n)；只有退化
 // 回退会到 O(n^3)。空约束的交集为整个平面，故返回 Unbounded。
 inline HalfPlaneIntersectionResult half_plane_intersection(
-    vector<HalfPlane> half_planes, f80 epsilon = DEFAULT_EPS) {
+    const vector<HalfPlane>& half_planes, f80 epsilon = DEFAULT_EPS) {
   if (!std::isfinite(epsilon) || epsilon < 0) {
     throw std::invalid_argument("epsilon must be finite and non-negative");
   }
@@ -3470,7 +3951,7 @@ inline HalfPlaneIntersectionResult half_plane_intersection(
 // ---------- 三维计算几何 ----------
 // 整数 dot/cross/triple 会先提升到 Calculation<T>；本模板中的 int256
 // 足以覆盖完整 i64 坐标的三维点积、叉积和四点定向体积。
-template <typename T>
+template <Coordinate T>
 struct Point3 {
   T x{};
   T y{};
@@ -3483,7 +3964,7 @@ struct Point3 {
   Point3 operator+() const noexcept { return *this; }
 
   Point3 operator-() const {
-    if constexpr (std::is_integral_v<T>) {
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
       return {checked_coordinate(-static_cast<Calculation<T>>(x)),
               checked_coordinate(-static_cast<Calculation<T>>(y)),
               checked_coordinate(-static_cast<Calculation<T>>(z))};
@@ -3493,10 +3974,16 @@ struct Point3 {
   }
 
   Point3& operator+=(const Point3& other) {
-    if constexpr (std::is_integral_v<T>) {
-      x = checked_coordinate(static_cast<Calculation<T>>(x) + other.x);
-      y = checked_coordinate(static_cast<Calculation<T>>(y) + other.y);
-      z = checked_coordinate(static_cast<Calculation<T>>(z) + other.z);
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
+      const T next_x =
+          checked_coordinate(static_cast<Calculation<T>>(x) + other.x);
+      const T next_y =
+          checked_coordinate(static_cast<Calculation<T>>(y) + other.y);
+      const T next_z =
+          checked_coordinate(static_cast<Calculation<T>>(z) + other.z);
+      x = next_x;
+      y = next_y;
+      z = next_z;
     } else {
       x += other.x;
       y += other.y;
@@ -3506,10 +3993,16 @@ struct Point3 {
   }
 
   Point3& operator-=(const Point3& other) {
-    if constexpr (std::is_integral_v<T>) {
-      x = checked_coordinate(static_cast<Calculation<T>>(x) - other.x);
-      y = checked_coordinate(static_cast<Calculation<T>>(y) - other.y);
-      z = checked_coordinate(static_cast<Calculation<T>>(z) - other.z);
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
+      const T next_x =
+          checked_coordinate(static_cast<Calculation<T>>(x) - other.x);
+      const T next_y =
+          checked_coordinate(static_cast<Calculation<T>>(y) - other.y);
+      const T next_z =
+          checked_coordinate(static_cast<Calculation<T>>(z) - other.z);
+      x = next_x;
+      y = next_y;
+      z = next_z;
     } else {
       x -= other.x;
       y -= other.y;
@@ -3519,10 +4012,16 @@ struct Point3 {
   }
 
   Point3& operator*=(T scalar) {
-    if constexpr (std::is_integral_v<T>) {
-      x = checked_coordinate(static_cast<Calculation<T>>(x) * scalar);
-      y = checked_coordinate(static_cast<Calculation<T>>(y) * scalar);
-      z = checked_coordinate(static_cast<Calculation<T>>(z) * scalar);
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
+      const T next_x =
+          checked_coordinate(static_cast<Calculation<T>>(x) * scalar);
+      const T next_y =
+          checked_coordinate(static_cast<Calculation<T>>(y) * scalar);
+      const T next_z =
+          checked_coordinate(static_cast<Calculation<T>>(z) * scalar);
+      x = next_x;
+      y = next_y;
+      z = next_z;
     } else {
       x *= scalar;
       y *= scalar;
@@ -3535,10 +4034,16 @@ struct Point3 {
     if (scalar == T{}) {
       throw std::invalid_argument("Point3 division by zero");
     }
-    if constexpr (std::is_integral_v<T>) {
-      x = checked_coordinate(static_cast<Calculation<T>>(x) / scalar);
-      y = checked_coordinate(static_cast<Calculation<T>>(y) / scalar);
-      z = checked_coordinate(static_cast<Calculation<T>>(z) / scalar);
+    if constexpr (is_bounded_integer_coordinate_v<T>) {
+      const T next_x =
+          checked_coordinate(static_cast<Calculation<T>>(x) / scalar);
+      const T next_y =
+          checked_coordinate(static_cast<Calculation<T>>(y) / scalar);
+      const T next_z =
+          checked_coordinate(static_cast<Calculation<T>>(z) / scalar);
+      x = next_x;
+      y = next_y;
+      z = next_z;
     } else {
       x /= scalar;
       y /= scalar;
@@ -3715,11 +4220,19 @@ inline std::optional<Point3D> unit(const Point3D& vector,
   if (!is_finite(vector) || !std::isfinite(epsilon) || epsilon < 0) {
     return std::nullopt;
   }
-  const f80 vector_length = length(vector);
-  if (!std::isfinite(vector_length) || vector_length <= epsilon) {
+  const f80 scale =
+      std::max({std::abs(vector.x), std::abs(vector.y), std::abs(vector.z)});
+  if (scale == 0) {
     return std::nullopt;
   }
-  Point3D result = vector / vector_length;
+  const Point3D scaled{vector.x / scale, vector.y / scale, vector.z / scale};
+  const f80 normalized_length =
+      std::hypotl(std::hypotl(scaled.x, scaled.y), scaled.z);
+  if (!std::isfinite(normalized_length) ||
+      scale <= epsilon / normalized_length) {
+    return std::nullopt;
+  }
+  Point3D result = scaled / normalized_length;
   if (!is_finite(result)) {
     return std::nullopt;
   }
@@ -3742,8 +4255,9 @@ inline bool is_valid(const Line3& line, f80 epsilon = DEFAULT_EPS) noexcept {
     return false;
   }
   const f80 squared_length = static_cast<f80>(norm_squared(line.direction));
+  const f80 invariant_epsilon = std::max(64 * epsilon, DEFAULT_RELATIVE_EPS);
   return std::isfinite(squared_length) &&
-         std::abs(squared_length - 1) <= 64 * epsilon;
+         std::abs(squared_length - 1) <= invariant_epsilon;
 }
 
 inline bool is_valid(const Plane3& plane, f80 epsilon = DEFAULT_EPS) noexcept {
@@ -3752,8 +4266,9 @@ inline bool is_valid(const Plane3& plane, f80 epsilon = DEFAULT_EPS) noexcept {
     return false;
   }
   const f80 squared_length = static_cast<f80>(norm_squared(plane.normal));
+  const f80 invariant_epsilon = std::max(64 * epsilon, DEFAULT_RELATIVE_EPS);
   return std::isfinite(squared_length) &&
-         std::abs(squared_length - 1) <= 64 * epsilon;
+         std::abs(squared_length - 1) <= invariant_epsilon;
 }
 
 // 工厂会拒绝非有限输入和退化方向，并把方向单位化。
@@ -3890,7 +4405,8 @@ inline ClosestLinePoints3Result closest_points(const Line3& first,
   const f80 denominator = a * c - b * b;
 
   ClosestLinePoints3Result result;
-  if (std::abs(denominator) <= epsilon * epsilon * a * c) {
+  if (std::abs(denominator) <=
+      DEFAULT_RELATIVE_EPS * DEFAULT_RELATIVE_EPS * a * c) {
     result.first_parameter = 0;
     result.second_parameter = e / c;
     result.first_point = first.point;
@@ -3934,7 +4450,7 @@ inline LinePlaneIntersection3 intersect(const Line3& line, const Plane3& plane,
   const f80 denominator = static_cast<f80>(dot(plane.normal, line.direction));
   const f80 numerator =
       plane.offset - static_cast<f80>(dot(plane.normal, line.point));
-  if (std::abs(denominator) <= epsilon) {
+  if (std::abs(denominator) <= DEFAULT_RELATIVE_EPS) {
     return {std::abs(numerator) <= epsilon
                 ? LinePlaneIntersectionType3::Contained
                 : LinePlaneIntersectionType3::None,
@@ -3961,13 +4477,11 @@ inline PlanePlaneIntersection3 intersect(const Plane3& first,
   }
   const Point3D direction = cross(first.normal, second.normal);
   const f80 direction_squared = static_cast<f80>(norm_squared(direction));
-  if (direction_squared <= epsilon * epsilon) {
+  if (direction_squared <= DEFAULT_RELATIVE_EPS * DEFAULT_RELATIVE_EPS) {
     const f80 orientation = static_cast<f80>(dot(first.normal, second.normal));
     const f80 aligned_second_offset =
         orientation >= 0 ? second.offset : -second.offset;
-    const f80 scale = std::max<f80>(
-        {1, std::abs(first.offset), std::abs(aligned_second_offset)});
-    return {std::abs(first.offset - aligned_second_offset) <= epsilon * scale
+    return {std::abs(first.offset - aligned_second_offset) <= epsilon
                 ? PlanePlaneIntersectionType3::Coincident
                 : PlanePlaneIntersectionType3::None,
             {}};
@@ -4082,13 +4596,53 @@ constexpr bool is_coefficient_v =
     std::is_integral_v<T> && !std::is_same_v<T, bool> &&
     sizeof(T) <= sizeof(u64);
 
+template <typename T>
+concept Coefficient = is_coefficient_v<std::remove_cv_t<T>>;
+
+consteval std::uint32_t pow_mod_u32(std::uint32_t base, std::uint64_t exponent,
+                                    std::uint32_t modulus) {
+  std::uint64_t result = 1 % modulus;
+  std::uint64_t value = base % modulus;
+  while (exponent > 0) {
+    if (exponent & 1) result = result * value % modulus;
+    value = value * value % modulus;
+    exponent >>= 1;
+  }
+  return static_cast<std::uint32_t>(result);
+}
+
+consteval bool is_prime_u32(std::uint32_t value) {
+  if (value < 2) return false;
+  if ((value & 1U) == 0) return value == 2;
+  for (std::uint32_t divisor = 3; divisor <= value / divisor; divisor += 2) {
+    if (value % divisor == 0) return false;
+  }
+  return true;
+}
+
+consteval bool is_primitive_root_u32(std::uint32_t root, std::uint32_t prime) {
+  if (!is_prime_u32(prime) || root == 0 || root >= prime) return false;
+  const std::uint32_t phi = prime - 1;
+  std::uint32_t remaining = phi;
+  for (std::uint32_t factor = 2; factor <= remaining / factor; ++factor) {
+    if (remaining % factor != 0) continue;
+    if (pow_mod_u32(root, phi / factor, prime) == 1) return false;
+    do {
+      remaining /= factor;
+    } while (remaining % factor == 0);
+  }
+  if (remaining > 1 && pow_mod_u32(root, phi / remaining, prime) == 1) {
+    return false;
+  }
+  return true;
+}
+
 constexpr std::size_t FFT_SAFE_MAX_LENGTH = std::size_t{1} << 20;
 constexpr u128 FFT_SAFE_INTEGER_BOUND =
     static_cast<u128>(1'000'000'000'000'000ULL);
 
-template <typename T>
+template <Coefficient T>
 u64 magnitude(T value) {
-  static_assert(is_coefficient_v<T>);
   if constexpr (std::is_signed_v<T>) {
     const i128 wide = static_cast<i128>(value);
     return static_cast<u64>(wide < 0 ? -wide : wide);
@@ -4114,20 +4668,14 @@ inline std::size_t convolution_size(std::size_t a_size, std::size_t b_size) {
 
 inline std::size_t transform_size(std::size_t result_size) {
   if (result_size == 0) return 0;
-  std::size_t size = 1;
-  while (size < result_size) {
-    if (size > std::numeric_limits<std::size_t>::max() / 2) {
-      throw std::length_error("transform length overflow");
-    }
-    size <<= 1;
+  if (result_size > std::bit_floor(std::numeric_limits<std::size_t>::max())) {
+    throw std::length_error("transform length overflow");
   }
-  return size;
+  return std::bit_ceil(result_size);
 }
 
-template <typename T>
+template <Coefficient T>
 u64 normalize_mod(T value, u64 modulus) {
-  static_assert(is_coefficient_v<T>,
-                "polynomial coefficients must be <= 64-bit integers");
   assert(modulus != 0);
   if constexpr (std::is_signed_v<T>) {
     i128 result = static_cast<i128>(value) % static_cast<i128>(modulus);
@@ -4166,7 +4714,7 @@ inline u64 ceil_sqrt(u64 value) {
 inline void fft(std::vector<FFTComplex>& values, bool inverse) {
   const std::size_t size = values.size();
   if (size == 0) return;
-  if ((size & (size - 1)) != 0) {
+  if (!std::has_single_bit(size)) {
     throw std::invalid_argument("FFT length must be a power of two");
   }
 
@@ -4185,7 +4733,7 @@ inline void fft(std::vector<FFTComplex>& values, bool inverse) {
   }
 
   static std::vector<FFTComplex> roots{FFTComplex(0, 0), FFTComplex(1, 0)};
-  static const FFTReal pi = std::acos(-1.0L);
+  static constexpr FFTReal pi = std::numbers::pi_v<FFTReal>;
   while (roots.size() < size) {
     const std::size_t half = roots.size();
     roots.resize(half << 1);
@@ -4219,11 +4767,9 @@ inline void fft(std::vector<FFTComplex>& values, bool inverse) {
 // 普通整数 FFT 卷积。精确结果必须能装入 i64；浮点 FFT 没有绝对精度保证。
 // 为避免极限数据静默舍入错误，要求变换长度 <= 2^20，且
 // min(n,m)*max(abs(a))*max(abs(b)) <= 1e15；否则抛异常。
-template <typename A, typename B>
-std::vector<i64> convolution_fft(const std::vector<A>& a,
-                                 const std::vector<B>& b) {
-  static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
-                "polynomial coefficients must be <= 64-bit integers");
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<i64> convolution_fft(const std::vector<A>& a,
+                                               const std::vector<B>& b) {
   const std::size_t result_size = detail::convolution_size(a.size(), b.size());
   if (result_size == 0) return {};
   const std::size_t size = detail::transform_size(result_size);
@@ -4267,6 +4813,10 @@ std::vector<i64> convolution_fft(const std::vector<A>& a,
 template <std::uint32_t Mod, std::uint32_t PrimitiveRoot, int MaxPower>
 class NTT {
   static_assert(Mod > 2 && Mod < (std::uint32_t{1} << 31));
+  static_assert(detail::is_prime_u32(Mod), "NTT modulus must be prime");
+  static_assert(
+      detail::is_primitive_root_u32(PrimitiveRoot, Mod),
+      "NTT PrimitiveRoot must generate the full multiplicative group");
   static_assert(MaxPower > 0 &&
                 MaxPower < std::numeric_limits<std::size_t>::digits);
 
@@ -4278,7 +4828,7 @@ class NTT {
   static void transform(std::vector<std::uint32_t>& values, bool inverse) {
     const std::size_t size = values.size();
     if (size == 0) return;
-    if ((size & (size - 1)) != 0) {
+    if (!std::has_single_bit(size)) {
       throw std::invalid_argument("NTT length must be a power of two");
     }
     if (size > max_length) {
@@ -4298,11 +4848,27 @@ class NTT {
       if (i < j) std::swap(values[i], values[j]);
     }
 
+    static constexpr auto stage_values = [] {
+      std::array<
+          std::array<std::uint32_t, static_cast<std::size_t>(MaxPower) + 1>, 3>
+          result{};
+      result[2][0] = 1;
+      for (std::size_t level = 1; level <= static_cast<std::size_t>(MaxPower);
+           ++level) {
+        const std::uint64_t length = std::uint64_t{1} << level;
+        result[0][level] = detail::pow_mod_u32(
+            PrimitiveRoot, (static_cast<std::uint64_t>(Mod) - 1) / length, Mod);
+        result[1][level] = detail::pow_mod_u32(result[0][level], Mod - 2, Mod);
+        result[2][level] = detail::pow_mod_u32(
+            static_cast<std::uint32_t>(length % Mod), Mod - 2, Mod);
+      }
+      return result;
+    }();
+
     for (std::size_t length = 2; length <= size; length <<= 1) {
-      u64 root = quick_power(
-          PrimitiveRoot, (static_cast<u64>(Mod) - 1) / static_cast<u64>(length),
-          Mod);
-      if (inverse) root = quick_power(root, Mod - 2, Mod);
+      const std::size_t level =
+          static_cast<std::size_t>(std::countr_zero(length));
+      const u64 root = stage_values[inverse ? 1 : 0][level];
       const std::size_t half = length >> 1;
       for (std::size_t left = 0; left < size; left += length) {
         u64 power = 1;
@@ -4323,7 +4889,9 @@ class NTT {
     }
 
     if (inverse) {
-      const u64 inverse_size = quick_power(size % Mod, Mod - 2, Mod);
+      const std::size_t level =
+          static_cast<std::size_t>(std::bit_width(size) - 1);
+      const u64 inverse_size = stage_values[2][level];
       for (std::uint32_t& value : values) {
         value = static_cast<std::uint32_t>(static_cast<u64>(value) *
                                            inverse_size % Mod);
@@ -4331,11 +4899,9 @@ class NTT {
     }
   }
 
-  template <typename A, typename B>
-  static std::vector<std::uint32_t> convolution(const std::vector<A>& a,
-                                                const std::vector<B>& b) {
-    static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
-                  "polynomial coefficients must be <= 64-bit integers");
+  template <detail::Coefficient A, detail::Coefficient B>
+  [[nodiscard]] static std::vector<std::uint32_t> convolution(
+      const std::vector<A>& a, const std::vector<B>& b) {
     const std::size_t result_size =
         detail::convolution_size(a.size(), b.size());
     if (result_size == 0) return {};
@@ -4364,9 +4930,9 @@ class NTT {
 
 using NTT998244353 = NTT<998'244'353U, 3U, 23>;
 
-template <typename A, typename B>
-std::vector<std::uint32_t> convolution_ntt(const std::vector<A>& a,
-                                           const std::vector<B>& b) {
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<std::uint32_t> convolution_ntt(
+    const std::vector<A>& a, const std::vector<B>& b) {
   return NTT998244353::convolution(a, b);
 }
 
@@ -4393,14 +4959,15 @@ static_assert(static_cast<u64>(MTT_P1P2 % MTT_P3) * MTT_INV_P1P2_MOD_P3 %
 static_assert(MTT_PRODUCT > (static_cast<u128>(1) << 23) *
                                 (MTT_MAX_MODULUS - 1) * (MTT_MAX_MODULUS - 1));
 
-inline u128 crt_three(std::uint32_t residue1, std::uint32_t residue2,
-                      std::uint32_t residue3) {
+inline u64 crt_first_two(std::uint32_t residue1,
+                         std::uint32_t residue2) noexcept {
   u64 step1 =
       (static_cast<u64>(residue2) + MTT_P2 - residue1 % MTT_P2) % MTT_P2;
   step1 = step1 * MTT_INV_P1_MOD_P2 % MTT_P2;
-  const u64 value12 =
-      static_cast<u64>(residue1) + static_cast<u64>(MTT_P1) * step1;
+  return static_cast<u64>(residue1) + static_cast<u64>(MTT_P1) * step1;
+}
 
+inline u128 crt_add_third(u64 value12, std::uint32_t residue3) noexcept {
   u64 step2 = (static_cast<u64>(residue3) + MTT_P3 - value12 % MTT_P3) % MTT_P3;
   step2 = step2 * MTT_INV_P1P2_MOD_P3 % MTT_P3;
   return static_cast<u128>(value12) + static_cast<u128>(MTT_P1P2) * step2;
@@ -4409,14 +4976,11 @@ inline u128 crt_three(std::uint32_t residue1, std::uint32_t residue2,
 }  // namespace detail
 
 // MTT：三组 NTT + CRT，对任意 1 <= modulus <= INT_MAX（不要求质数）
-// 精确计算模卷积。公共代数长度上限 2^24；跑满约需 300 MiB 以上内存。
-// CRT 全程使用 u128。
-template <typename A, typename B>
-std::vector<std::uint32_t> convolution_mtt(const std::vector<A>& a,
-                                           const std::vector<B>& b,
-                                           i64 modulus) {
-  static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
-                "polynomial coefficients must be <= 64-bit integers");
+// 精确计算模卷积。公共代数长度上限 2^24；CRT 分两阶段合并并复用第三
+// 个剩余数组作为输出，避免同时保留三份剩余数组和一份最终结果。
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<std::uint32_t> convolution_mtt(
+    const std::vector<A>& a, const std::vector<B>& b, i64 modulus) {
   if (modulus <= 0 || static_cast<u64>(modulus) > detail::MTT_MAX_MODULUS) {
     throw std::invalid_argument("MTT requires 1 <= modulus <= INT_MAX");
   }
@@ -4440,14 +5004,19 @@ std::vector<std::uint32_t> convolution_mtt(const std::vector<A>& a,
         static_cast<std::uint32_t>(detail::normalize_mod(b[i], mod));
   }
 
-  const auto residue1 = detail::MTTN1::convolution(normalized_a, normalized_b);
-  const auto residue2 = detail::MTTN2::convolution(normalized_a, normalized_b);
-  const auto residue3 = detail::MTTN3::convolution(normalized_a, normalized_b);
+  auto residue1 = detail::MTTN1::convolution(normalized_a, normalized_b);
+  auto residue2 = detail::MTTN2::convolution(normalized_a, normalized_b);
+  std::vector<u64> residue12(result_size);
+  for (std::size_t i = 0; i < result_size; ++i) {
+    residue12[i] = detail::crt_first_two(residue1[i], residue2[i]);
+  }
+  std::vector<std::uint32_t>().swap(residue1);
+  std::vector<std::uint32_t>().swap(residue2);
 
-  std::vector<std::uint32_t> result(result_size);
+  auto result = detail::MTTN3::convolution(normalized_a, normalized_b);
   for (std::size_t i = 0; i < result_size; ++i) {
     result[i] = static_cast<std::uint32_t>(
-        detail::crt_three(residue1[i], residue2[i], residue3[i]) % mod);
+        detail::crt_add_third(residue12[i], result[i]) % mod);
   }
   return result;
 }
@@ -4456,12 +5025,9 @@ std::vector<std::uint32_t> convolution_mtt(const std::vector<A>& a,
 // 支持任意 1 <= modulus <= INT_MAX（不要求质数），但仍是浮点算法。
 // 为控制误差，限制变换长度 <= 2^20，且三个子卷积的粗界 <= 1e15；
 // 超出时抛异常，请改用精确的 convolution_mtt。
-template <typename A, typename B>
-std::vector<std::uint32_t> convolution_split_fft(const std::vector<A>& a,
-                                                 const std::vector<B>& b,
-                                                 i64 modulus) {
-  static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
-                "polynomial coefficients must be <= 64-bit integers");
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<std::uint32_t> convolution_split_fft(
+    const std::vector<A>& a, const std::vector<B>& b, i64 modulus) {
   if (modulus <= 0 || static_cast<u64>(modulus) > detail::MTT_MAX_MODULUS) {
     throw std::invalid_argument("split FFT requires 1 <= modulus <= INT_MAX");
   }
@@ -4552,6 +5118,10 @@ enum class FWTType { Or, And, Xor };
 
 namespace detail {
 
+template <FWTType Type>
+concept ValidFWTType =
+    Type == FWTType::Or || Type == FWTType::And || Type == FWTType::Xor;
+
 inline u64 checked_fwt_modulus(i64 modulus) {
   if (modulus <= 0) {
     throw std::invalid_argument("FWT/FMT modulus must be positive");
@@ -4565,20 +5135,16 @@ inline void require_fwt_type(FWTType type) {
   }
 }
 
-inline int mask_bits(std::size_t size) {
+inline std::size_t mask_bits(std::size_t size) {
   if (size == 0) return 0;
-  if ((size & (size - 1)) != 0) {
+  if (!std::has_single_bit(size)) {
     throw std::invalid_argument("FWT/FMT length must be a power of two");
   }
-  int bits = 0;
-  while (size > 1) {
-    size >>= 1;
-    ++bits;
-  }
-  return bits;
+  return static_cast<std::size_t>(std::bit_width(size) - 1);
 }
 
-inline int require_same_mask_shape(std::size_t a_size, std::size_t b_size) {
+inline std::size_t require_same_mask_shape(std::size_t a_size,
+                                           std::size_t b_size) {
   if (a_size != b_size) {
     throw std::invalid_argument(
         "bitmask convolution inputs must have equal length");
@@ -4603,18 +5169,11 @@ inline void require_xor_inverse(std::size_t size, FWTType type, u64 modulus) {
   }
 }
 
-}  // namespace detail
-
-// 原地 FWT。values 是 u64，会先按 modulus 归一化；参数错误时不修改。
-// OR/AND 在任意正模下均可逆；XOR 长度 > 1 时逆变换要求奇数模。
-inline void fwt(std::vector<u64>& values, FWTType type, bool inverse,
-                i64 modulus) {
-  const u64 mod = detail::checked_fwt_modulus(modulus);
-  detail::require_fwt_type(type);
-  const int bits = detail::mask_bits(values.size());
-  if (inverse) detail::require_xor_inverse(values.size(), type, mod);
-
-  for (u64& value : values) value %= mod;
+template <FWTType Type>
+  requires ValidFWTType<Type>
+inline void fwt_core(std::vector<u64>& values, bool inverse, u64 modulus,
+                     std::size_t bits) {
+  for (u64& value : values) value %= modulus;
   if (values.empty()) return;
 
   for (std::size_t half = 1; half < values.size(); half <<= 1) {
@@ -4622,15 +5181,15 @@ inline void fwt(std::vector<u64>& values, FWTType type, bool inverse,
       for (std::size_t i = 0; i < half; ++i) {
         u64& lower = values[left + i];
         u64& upper = values[left + i + half];
-        if (type == FWTType::Or) {
-          upper = inverse ? detail::sub_mod(upper, lower, mod)
-                          : detail::add_mod(upper, lower, mod);
-        } else if (type == FWTType::And) {
-          lower = inverse ? detail::sub_mod(lower, upper, mod)
-                          : detail::add_mod(lower, upper, mod);
+        if constexpr (Type == FWTType::Or) {
+          upper = inverse ? sub_mod(upper, lower, modulus)
+                          : add_mod(upper, lower, modulus);
+        } else if constexpr (Type == FWTType::And) {
+          lower = inverse ? sub_mod(lower, upper, modulus)
+                          : add_mod(lower, upper, modulus);
         } else {
-          const u64 sum = detail::add_mod(lower, upper, mod);
-          const u64 difference = detail::sub_mod(lower, upper, mod);
+          const u64 sum = add_mod(lower, upper, modulus);
+          const u64 difference = sub_mod(lower, upper, modulus);
           lower = sum;
           upper = difference;
         }
@@ -4638,28 +5197,62 @@ inline void fwt(std::vector<u64>& values, FWTType type, bool inverse,
     }
   }
 
-  if (type == FWTType::Xor && inverse && bits > 0) {
-    const u64 inverse_two = mod / 2 + 1;
-    u64 inverse_size = 1 % mod;
-    for (int i = 0; i < bits; ++i) {
-      inverse_size = ::mul_mod(inverse_size, inverse_two, mod);
-    }
-    for (u64& value : values) {
-      value = ::mul_mod(value, inverse_size, mod);
+  if constexpr (Type == FWTType::Xor) {
+    if (inverse && bits > 0) {
+      const u64 inverse_two = modulus / 2 + 1;
+      u64 inverse_size = 1 % modulus;
+      for (std::size_t i = 0; i < bits; ++i) {
+        inverse_size = ::mul_mod(inverse_size, inverse_two, modulus);
+      }
+      for (u64& value : values) {
+        value = ::mul_mod(value, inverse_size, modulus);
+      }
     }
   }
 }
 
+}  // namespace detail
+
+// 原地 FWT。values 是 u64，会先按 modulus 归一化；参数错误时不修改。
+// OR/AND 在任意正模下均可逆；XOR 长度 > 1 时逆变换要求奇数模。
+template <FWTType Type>
+  requires detail::ValidFWTType<Type>
+inline void fwt(std::vector<u64>& values, bool inverse, i64 modulus) {
+  const u64 mod = detail::checked_fwt_modulus(modulus);
+  const std::size_t bits = detail::mask_bits(values.size());
+  if constexpr (Type == FWTType::Xor) {
+    if (inverse) detail::require_xor_inverse(values.size(), Type, mod);
+  }
+  detail::fwt_core<Type>(values, inverse, mod, bits);
+}
+
+inline void fwt(std::vector<u64>& values, FWTType type, bool inverse,
+                i64 modulus) {
+  const u64 mod = detail::checked_fwt_modulus(modulus);
+  detail::require_fwt_type(type);
+  const std::size_t bits = detail::mask_bits(values.size());
+  if (inverse) detail::require_xor_inverse(values.size(), type, mod);
+  switch (type) {
+    case FWTType::Or:
+      return detail::fwt_core<FWTType::Or>(values, inverse, mod, bits);
+    case FWTType::And:
+      return detail::fwt_core<FWTType::And>(values, inverse, mod, bits);
+    case FWTType::Xor:
+      return detail::fwt_core<FWTType::Xor>(values, inverse, mod, bits);
+  }
+  std::unreachable();
+}
+
 inline void fwt_or(std::vector<u64>& values, bool inverse, i64 modulus) {
-  fwt(values, FWTType::Or, inverse, modulus);
+  fwt<FWTType::Or>(values, inverse, modulus);
 }
 
 inline void fwt_and(std::vector<u64>& values, bool inverse, i64 modulus) {
-  fwt(values, FWTType::And, inverse, modulus);
+  fwt<FWTType::And>(values, inverse, modulus);
 }
 
 inline void fwt_xor(std::vector<u64>& values, bool inverse, i64 modulus) {
-  fwt(values, FWTType::Xor, inverse, modulus);
+  fwt<FWTType::Xor>(values, inverse, modulus);
 }
 
 // FMT 语义别名：
@@ -4684,12 +5277,10 @@ inline void superset_mobius_transform(std::vector<u64>& values, i64 modulus) {
 
 // FWT 位运算卷积。两组输入必须等长，长度必须是 2 的幂；返回同样长度。
 // 卷积包装支持不超过 64 位的有/无符号整数，并正确归一化负数。
-template <typename A, typename B>
-std::vector<u64> convolution_fwt(const std::vector<A>& a,
-                                 const std::vector<B>& b, FWTType type,
-                                 i64 modulus) {
-  static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
-                "bitmask coefficients must be <= 64-bit integers");
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<u64> convolution_fwt(const std::vector<A>& a,
+                                               const std::vector<B>& b,
+                                               FWTType type, i64 modulus) {
   const u64 mod = detail::checked_fwt_modulus(modulus);
   detail::require_fwt_type(type);
   detail::require_same_mask_shape(a.size(), b.size());
@@ -4711,34 +5302,36 @@ std::vector<u64> convolution_fwt(const std::vector<A>& a,
   return fa;
 }
 
-template <typename A, typename B>
-std::vector<u64> convolution_fwt_or(const std::vector<A>& a,
-                                    const std::vector<B>& b, i64 modulus) {
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<u64> convolution_fwt_or(const std::vector<A>& a,
+                                                  const std::vector<B>& b,
+                                                  i64 modulus) {
   return convolution_fwt(a, b, FWTType::Or, modulus);
 }
 
-template <typename A, typename B>
-std::vector<u64> convolution_fwt_and(const std::vector<A>& a,
-                                     const std::vector<B>& b, i64 modulus) {
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<u64> convolution_fwt_and(const std::vector<A>& a,
+                                                   const std::vector<B>& b,
+                                                   i64 modulus) {
   return convolution_fwt(a, b, FWTType::And, modulus);
 }
 
-template <typename A, typename B>
-std::vector<u64> convolution_fwt_xor(const std::vector<A>& a,
-                                     const std::vector<B>& b, i64 modulus) {
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<u64> convolution_fwt_xor(const std::vector<A>& a,
+                                                   const std::vector<B>& b,
+                                                   i64 modulus) {
   return convolution_fwt(a, b, FWTType::Xor, modulus);
 }
 
 // 标准子集卷积：result[S] = sum_{T subseteq S} a[T] * b[S\T]。
 // 设 n=2^k，复杂度 O(k^2*2^k)，额外空间 O(k*2^k)；任意正模可用。
 // 当前 u64 实现 k=20 时约需 350 MiB，需结合题目内存限制使用。
-template <typename A, typename B>
-std::vector<u64> convolution_subset(const std::vector<A>& a,
-                                    const std::vector<B>& b, i64 modulus) {
-  static_assert(detail::is_coefficient_v<A> && detail::is_coefficient_v<B>,
-                "subset coefficients must be <= 64-bit integers");
+template <detail::Coefficient A, detail::Coefficient B>
+[[nodiscard]] std::vector<u64> convolution_subset(const std::vector<A>& a,
+                                                  const std::vector<B>& b,
+                                                  i64 modulus) {
   const u64 mod = detail::checked_fwt_modulus(modulus);
-  const int bits = detail::require_same_mask_shape(a.size(), b.size());
+  const std::size_t bits = detail::require_same_mask_shape(a.size(), b.size());
   if (a.empty()) return {};
   if (mod == 1) return std::vector<u64>(a.size(), 0);
 
@@ -4750,17 +5343,17 @@ std::vector<u64> convolution_subset(const std::vector<A>& a,
     ranked_a[rank[mask]][mask] = detail::normalize_mod(a[mask], mod);
     ranked_b[rank[mask]][mask] = detail::normalize_mod(b[mask], mod);
   }
-  for (int current_rank = 0; current_rank <= bits; ++current_rank) {
+  for (std::size_t current_rank = 0; current_rank <= bits; ++current_rank) {
     subset_zeta_transform(ranked_a[current_rank], modulus);
     subset_zeta_transform(ranked_b[current_rank], modulus);
   }
 
   std::vector<u64> result(a.size());
   std::vector<u64> layer(a.size());
-  for (int current_rank = 0; current_rank <= bits; ++current_rank) {
+  for (std::size_t current_rank = 0; current_rank <= bits; ++current_rank) {
     for (std::size_t mask = 0; mask < a.size(); ++mask) {
       u64 value = 0;
-      for (int left_rank = 0; left_rank <= current_rank; ++left_rank) {
+      for (std::size_t left_rank = 0; left_rank <= current_rank; ++left_rank) {
         const u64 product =
             ::mul_mod(ranked_a[left_rank][mask],
                       ranked_b[current_rank - left_rank][mask], mod);
@@ -4827,7 +5420,7 @@ constexpr ll MAXN = 100'000 + 5;
 
 void solve() {}
 
-signed main() {
+int main() {
   ios_base::sync_with_stdio(false);
   cin.tie(nullptr);
   ll T = 1LL;
