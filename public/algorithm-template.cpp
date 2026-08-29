@@ -1,6 +1,5 @@
 #include <bits/stdc++.h>
 
-#include <boost/multiprecision/cpp_int.hpp>
 #include <ext/pb_ds/assoc_container.hpp>
 #include <ext/pb_ds/tree_policy.hpp>
 using namespace std;
@@ -10,8 +9,6 @@ using namespace std;
 #error "This template requires C++23 or later."
 #endif
 
-// #include <boost/multiprecision/cpp_int.hpp>
-// using Big = boost::multiprecision::uint256_t;
 using i64 = long long;
 using i128 = __int128_t;
 using u64 = unsigned long long;
@@ -683,9 +680,13 @@ namespace mod_arithmetic_detail {
 }
 
 // 质数模数下的阶乘、逆阶乘、排列数和组合数。
-// ensure(n) 单次最坏 O(n)；对单调增大的 n，总计算量摊还 O(max_n)，查询 O(1)。
-// P/C 的阶乘表公式要求 0 <= n < modulus；n >= modulus 时应按题使用
-// Lucas 定理或其他算法，不能继续套用阶乘与逆阶乘公式。
+// P/C 是统一接口：已显式预处理的数位直接 O(1) 查表，否则分别切换到
+// 直接乘法和 Lucas 定理；查询本身绝不会按照 n 的大小申请内存。
+// 批量查询前可用构造参数 initial_n 或 ensure(n) 增量预处理；它们要求
+// 0 <= n < modulus。
+// 未缓存的排列做 min(k,p-1-k) 次乘法，补集分支另需一次 O(log p) 求逆；
+// Lucas 在每个未缓存的 p 进制数位上做
+// min(k_i, n_i-k_i, p-1-n_i) 次乘法及一次 O(log p) 求逆。
 // 构造时会验证模数；不满足条件会抛出 invalid_argument/out_of_range。
 // 两张表的有效数据占 16 * (prepared() + 1) 字节，实际容量可能略大。
 class PrimeComb {
@@ -765,19 +766,84 @@ class PrimeComb {
   // P(n, k) = n! / (n-k)!
   [[nodiscard]] u64 P(u64 n, u64 k) {
     if (k > n) return 0;
-    ensure(n);
+    return permutation_without_expansion(n, k);
+  }
 
+  // C(n, k) = n! / (k!(n-k)!)
+  [[nodiscard]] u64 C(u64 n, u64 k) {
+    if (k > n) return 0;
+    return C_lucas(n, k);
+  }
+
+ private:
+  [[nodiscard]] u64 prepared_permutation(u64 n, u64 k) const noexcept {
+    assert(k <= n && n <= prepared());
     const size_t nn = static_cast<size_t>(n);
     const size_t nk = static_cast<size_t>(n - k);
     return mod_arithmetic_detail::mul_unchecked(
         factorial_[nn], inverse_factorial_[nk], modulus_);
   }
 
-  // C(n, k) = n! / (k!(n-k)!)
-  [[nodiscard]] u64 C(u64 n, u64 k) {
-    if (k > n) return 0;
-    ensure(n);
+  // 未命中表时直接计算 n*(n-1)*...*(n-k+1)，不建立阶乘表。
+  // k >= modulus 时连续 k 个整数必含 modulus 的倍数，结果直接为 0。
+  [[nodiscard]] u64 permutation_without_expansion(u64 n, u64 k) const noexcept {
+    assert(k <= n);
+    if (k >= modulus_) return 0;
 
+    const u64 n_digit = n % modulus_;
+    if (n_digit < k) return 0;
+    if (n_digit <= prepared()) return prepared_permutation(n_digit, k);
+
+    const u64 complement_steps = modulus_ - 1 - k;
+    if (complement_steps < k) {
+      // 目标区间 A 与其在 [1,p-1] 中的补集 B 满足 A*B=(p-1)!=-1。
+      // 当补集更短时计算 A=-inv(B)，乘法次数由 k 降为 p-1-k。
+      u64 complement_product = 1;
+      for (u64 value = 1; value <= n_digit - k; ++value) {
+        complement_product = mod_arithmetic_detail::mul_unchecked(
+            complement_product, value, modulus_);
+      }
+      for (u64 value = n_digit + 1; value < modulus_; ++value) {
+        complement_product = mod_arithmetic_detail::mul_unchecked(
+            complement_product, value, modulus_);
+      }
+      const u64 inverse = mod_arithmetic_detail::power_unchecked(
+          complement_product, modulus_ - 2, modulus_);
+      assert(inverse != 0);
+      return modulus_ - inverse;
+    }
+
+    u64 result = 1;
+    for (u64 offset = 0; offset < k; ++offset) {
+      result = mod_arithmetic_detail::mul_unchecked(result, n_digit - offset,
+                                                    modulus_);
+    }
+    return result;
+  }
+
+  // Lucas 定理支持完整 u64 n/k，且绝不会按 n 或 modulus 自动扩表。
+  // 小质数、多次查询时可先 ensure(modulus-1)，随后每个数位为 O(1)；
+  // 大质数未预处理的数位会退化为乘法公式，最坏仍可能很慢。
+  [[nodiscard]] u64 C_lucas(u64 n, u64 k) const noexcept {
+    if (k > n) return 0;
+    k = std::min(k, n - k);
+    if (k == 0) return 1;
+
+    u64 result = 1;
+    while (n > 0 || k > 0) {
+      const u64 n_digit = n % modulus_;
+      const u64 k_digit = k % modulus_;
+      if (k_digit > n_digit) return 0;
+      result = mod_arithmetic_detail::mul_unchecked(
+          result, digit_combination(n_digit, k_digit), modulus_);
+      n /= modulus_;
+      k /= modulus_;
+    }
+    return result;
+  }
+
+  [[nodiscard]] u64 prepared_combination(u64 n, u64 k) const noexcept {
+    assert(k <= n && n <= prepared());
     const size_t nn = static_cast<size_t>(n);
     const size_t kk = static_cast<size_t>(k);
     const size_t nk = static_cast<size_t>(n - k);
@@ -787,7 +853,40 @@ class PrimeComb {
                                                 modulus_);
   }
 
- private:
+  [[nodiscard]] u64 multiplicative_combination(u64 n, u64 k) const noexcept {
+    assert(k <= n && n < modulus_);
+    k = std::min(k, n - k);
+    u64 numerator = 1;
+    u64 denominator = 1;
+    for (u64 i = 1; i <= k; ++i) {
+      numerator =
+          mod_arithmetic_detail::mul_unchecked(numerator, n - k + i, modulus_);
+      denominator =
+          mod_arithmetic_detail::mul_unchecked(denominator, i, modulus_);
+    }
+    const u64 inverse_denominator = mod_arithmetic_detail::power_unchecked(
+        denominator, modulus_ - 2, modulus_);
+    return mod_arithmetic_detail::mul_unchecked(numerator, inverse_denominator,
+                                                modulus_);
+  }
+
+  [[nodiscard]] u64 digit_combination(u64 n, u64 k) const noexcept {
+    assert(k <= n && n < modulus_);
+    if (k == 0 || k == n) return 1;
+    if (n <= prepared()) return prepared_combination(n, k);
+
+    k = std::min(k, n - k);
+    const u64 distance_to_modulus = modulus_ - 1 - n;
+    if (distance_to_modulus < k) {
+      // C(p-1-a,k) = (-1)^k C(a+k,a) (mod p)。n 越靠近 p-1，
+      // 补集公式越便宜；distance_to_modulus + k <= p-1，不会溢出。
+      const u64 value = multiplicative_combination(distance_to_modulus + k,
+                                                   distance_to_modulus);
+      return (k & 1) == 0 ? value : modulus_ - value;
+    }
+    return multiplicative_combination(n, k);
+  }
+
   void reserve_tables(size_t required_size) {
     const size_t max_capacity =
         std::min(factorial_.max_size(), inverse_factorial_.max_size());
@@ -843,6 +942,10 @@ class PrimeComb {
 // comb.C(10, 3);              // 120
 // comb.C(10, 11);             // 0，k > n
 // comb.ensure(200'000);       // 之后可线性增量扩容，不会缩小已有表
+// comb.P(1'000'000'000'000'000'000ULL, 20); // 自动走 O(20) 直接乘法
+// comb.C(1'000'000'000'000'000'000ULL, 20); // 自动走 O(20) 乘法公式
+// comb.C(1'000'000'000'000'000'000ULL,
+//        500'000'000'000'000'000ULL); // 自动走 Lucas，不按 n 扩表
 
 // 扩展欧几里得、模逆、线性同余、广义 CRT，以及数论中的 Möbius 反演。
 namespace nt {
@@ -2509,33 +2612,403 @@ struct Tolerance {
   }
 };
 
-using ExactInteger = boost::multiprecision::int256_t;
-using ArbitraryInteger = boost::multiprecision::cpp_int;
+// 洛谷的 GCC 15.1 环境不提供 Boost.Multiprecision。这里内置一个带符号、
+// 256 位绝对值的定长整数，覆盖从完整 64 位坐标直接产生的二维/三维谓词：
+// 二维最坏约 130 位，三维四点定向体积最坏小于 195 位。
+// ExactInteger 也可承接宽结果；后续运算一旦超出 256 位会抛
+// overflow_error，不提供任意精度整数语义。
+template <typename T>
+inline constexpr bool is_native_integer_v =
+    (std::is_integral_v<std::remove_cv_t<T>> &&
+     !std::is_same_v<std::remove_cv_t<T>, bool>) ||
+    std::is_same_v<std::remove_cv_t<T>, i128> ||
+    std::is_same_v<std::remove_cv_t<T>, u128>;
+
+template <typename T>
+inline constexpr bool is_native_signed_integer_v =
+    std::is_signed_v<std::remove_cv_t<T>> ||
+    std::is_same_v<std::remove_cv_t<T>, i128>;
+
+class ExactInteger {
+ public:
+  constexpr ExactInteger() = default;
+
+  template <typename T>
+    requires is_native_integer_v<T>
+  constexpr ExactInteger(T value) noexcept {
+    assign(value);
+  }
+
+  [[nodiscard]] constexpr bool is_zero() const noexcept {
+    return magnitude_is_zero(words_);
+  }
+
+  explicit operator f80() const noexcept {
+    constexpr f80 kWordBase = 18'446'744'073'709'551'616.0L;
+    f80 result = 0;
+    for (std::size_t i = words_.size(); i-- > 0;) {
+      result = result * kWordBase + static_cast<f80>(words_[i]);
+    }
+    return negative_ ? -result : result;
+  }
+
+  template <typename T>
+    requires(std::is_integral_v<T> && !std::is_same_v<T, bool> &&
+             sizeof(T) <= sizeof(u64))
+  explicit constexpr operator T() const {
+    if (words_[1] != 0 || words_[2] != 0 || words_[3] != 0) {
+      throw std::overflow_error("ExactInteger conversion overflow");
+    }
+
+    const u64 magnitude = words_[0];
+    if constexpr (std::is_unsigned_v<T>) {
+      if (negative_ ||
+          magnitude > static_cast<u64>(std::numeric_limits<T>::max())) {
+        throw std::overflow_error("ExactInteger conversion overflow");
+      }
+      return static_cast<T>(magnitude);
+    } else {
+      const u64 positive_limit =
+          static_cast<u64>(std::numeric_limits<T>::max());
+      if (!negative_) {
+        if (magnitude > positive_limit) {
+          throw std::overflow_error("ExactInteger conversion overflow");
+        }
+        return static_cast<T>(magnitude);
+      }
+
+      const u64 negative_limit = positive_limit + 1;
+      if (magnitude > negative_limit) {
+        throw std::overflow_error("ExactInteger conversion overflow");
+      }
+      if (magnitude == negative_limit) {
+        return std::numeric_limits<T>::lowest();
+      }
+      return static_cast<T>(-static_cast<T>(magnitude));
+    }
+  }
+
+  [[nodiscard]] std::string to_string() const {
+    if (is_zero()) return "0";
+
+    Words value = words_;
+    std::string result;
+    while (!magnitude_is_zero(value)) {
+      const u64 remainder = divide_magnitude_by_small(value, 10);
+      result.push_back(static_cast<char>('0' + remainder));
+    }
+    if (negative_) result.push_back('-');
+    std::ranges::reverse(result);
+    return result;
+  }
+
+  constexpr ExactInteger operator+() const noexcept { return *this; }
+
+  constexpr ExactInteger operator-() const noexcept {
+    ExactInteger result = *this;
+    if (!result.is_zero()) result.negative_ = !result.negative_;
+    return result;
+  }
+
+  ExactInteger& operator+=(const ExactInteger& other) {
+    return *this = *this + other;
+  }
+
+  ExactInteger& operator-=(const ExactInteger& other) {
+    return *this = *this - other;
+  }
+
+  ExactInteger& operator*=(const ExactInteger& other) {
+    return *this = *this * other;
+  }
+
+  ExactInteger& operator/=(const ExactInteger& other) {
+    return *this = *this / other;
+  }
+
+  ExactInteger& operator%=(const ExactInteger& other) {
+    return *this = *this % other;
+  }
+
+  friend ExactInteger operator+(const ExactInteger& left,
+                                const ExactInteger& right) {
+    if (left.negative_ == right.negative_) {
+      ExactInteger result;
+      result.negative_ = left.negative_;
+      result.words_ = add_magnitude(left.words_, right.words_);
+      result.normalize();
+      return result;
+    }
+
+    const int comparison = compare_magnitude(left.words_, right.words_);
+    if (comparison == 0) return {};
+
+    ExactInteger result;
+    if (comparison > 0) {
+      result.negative_ = left.negative_;
+      result.words_ = subtract_magnitude(left.words_, right.words_);
+    } else {
+      result.negative_ = right.negative_;
+      result.words_ = subtract_magnitude(right.words_, left.words_);
+    }
+    return result;
+  }
+
+  friend ExactInteger operator-(const ExactInteger& left,
+                                const ExactInteger& right) {
+    return left + (-right);
+  }
+
+  friend ExactInteger operator*(const ExactInteger& left,
+                                const ExactInteger& right) {
+    ExactInteger result;
+    result.words_ = multiply_magnitude(left.words_, right.words_);
+    result.negative_ = left.negative_ != right.negative_;
+    result.normalize();
+    return result;
+  }
+
+  friend ExactInteger operator/(const ExactInteger& dividend,
+                                const ExactInteger& divisor) {
+    const auto [quotient, remainder] =
+        divide_magnitude(dividend.words_, divisor.words_);
+    static_cast<void>(remainder);
+
+    ExactInteger result;
+    result.words_ = quotient;
+    result.negative_ = dividend.negative_ != divisor.negative_;
+    result.normalize();
+    return result;
+  }
+
+  friend ExactInteger operator%(const ExactInteger& dividend,
+                                const ExactInteger& divisor) {
+    const auto [quotient, remainder] =
+        divide_magnitude(dividend.words_, divisor.words_);
+    static_cast<void>(quotient);
+
+    ExactInteger result;
+    result.words_ = remainder;
+    result.negative_ = dividend.negative_;
+    result.normalize();
+    return result;
+  }
+
+  friend constexpr bool operator==(const ExactInteger& left,
+                                   const ExactInteger& right) noexcept {
+    return left.negative_ == right.negative_ && left.words_ == right.words_;
+  }
+
+  friend constexpr std::strong_ordering operator<=>(
+      const ExactInteger& left, const ExactInteger& right) noexcept {
+    if (left.negative_ != right.negative_) {
+      return left.negative_ ? std::strong_ordering::less
+                            : std::strong_ordering::greater;
+    }
+
+    const int comparison = compare_magnitude(left.words_, right.words_);
+    if (comparison == 0) return std::strong_ordering::equal;
+    if (left.negative_) {
+      return comparison > 0 ? std::strong_ordering::less
+                            : std::strong_ordering::greater;
+    }
+    return comparison > 0 ? std::strong_ordering::greater
+                          : std::strong_ordering::less;
+  }
+
+  friend std::ostream& operator<<(std::ostream& output,
+                                  const ExactInteger& value) {
+    return output << value.to_string();
+  }
+
+ private:
+  using Words = std::array<u64, 4>;
+
+  template <typename T>
+    requires is_native_integer_v<T>
+  constexpr void assign(T value) noexcept {
+    u128 magnitude = 0;
+    if constexpr (is_native_signed_integer_v<T>) {
+      if (value < 0) {
+        negative_ = true;
+        magnitude = u128{0} - static_cast<u128>(value);
+      } else {
+        magnitude = static_cast<u128>(value);
+      }
+    } else {
+      magnitude = static_cast<u128>(value);
+    }
+
+    words_[0] = static_cast<u64>(magnitude);
+    words_[1] = static_cast<u64>(magnitude >> 64);
+    normalize();
+  }
+
+  static constexpr bool magnitude_is_zero(const Words& value) noexcept {
+    return value[0] == 0 && value[1] == 0 && value[2] == 0 && value[3] == 0;
+  }
+
+  constexpr void normalize() noexcept {
+    if (is_zero()) negative_ = false;
+  }
+
+  static constexpr int compare_magnitude(const Words& left,
+                                         const Words& right) noexcept {
+    for (std::size_t i = left.size(); i-- > 0;) {
+      if (left[i] != right[i]) return left[i] < right[i] ? -1 : 1;
+    }
+    return 0;
+  }
+
+  static Words add_magnitude(const Words& left, const Words& right) {
+    Words result{};
+    u64 carry = 0;
+    for (std::size_t i = 0; i < result.size(); ++i) {
+      const u128 sum = static_cast<u128>(left[i]) + right[i] + carry;
+      result[i] = static_cast<u64>(sum);
+      carry = static_cast<u64>(sum >> 64);
+    }
+    if (carry != 0) {
+      throw std::overflow_error("ExactInteger addition overflow");
+    }
+    return result;
+  }
+
+  static constexpr Words subtract_magnitude(const Words& left,
+                                            const Words& right) noexcept {
+    assert(compare_magnitude(left, right) >= 0);
+    Words result{};
+    u64 borrow = 0;
+    for (std::size_t i = 0; i < result.size(); ++i) {
+      const u64 subtrahend = right[i] + borrow;
+      const bool subtrahend_overflow = subtrahend < right[i];
+      const bool next_borrow = subtrahend_overflow || left[i] < subtrahend;
+      result[i] = left[i] - subtrahend;
+      borrow = next_borrow ? 1 : 0;
+    }
+    assert(borrow == 0);
+    return result;
+  }
+
+  static Words multiply_magnitude(const Words& left, const Words& right) {
+    std::array<u64, 8> full{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+      u128 carry = 0;
+      for (std::size_t j = 0; j < right.size(); ++j) {
+        const std::size_t position = i + j;
+        const u128 product =
+            static_cast<u128>(left[i]) * right[j] + full[position] + carry;
+        full[position] = static_cast<u64>(product);
+        carry = product >> 64;
+      }
+      full[i + left.size()] = static_cast<u64>(carry);
+    }
+
+    if (std::ranges::any_of(full.begin() + 4, full.end(),
+                            [](u64 word) { return word != 0; })) {
+      throw std::overflow_error("ExactInteger multiplication overflow");
+    }
+    return {full[0], full[1], full[2], full[3]};
+  }
+
+  static constexpr int magnitude_bit_width(const Words& value) noexcept {
+    for (int i = 3; i >= 0; --i) {
+      const u64 word = value[static_cast<std::size_t>(i)];
+      if (word != 0) return i * 64 + std::bit_width(word);
+    }
+    return 0;
+  }
+
+  static constexpr Words shift_left(const Words& value, int shift) noexcept {
+    assert(shift >= 0 && shift < 256);
+    if (shift == 0) return value;
+
+    Words result{};
+    const int word_shift = shift / 64;
+    const int bit_shift = shift % 64;
+    for (int destination = 3; destination >= word_shift; --destination) {
+      const int source = destination - word_shift;
+      u64 word = value[static_cast<std::size_t>(source)] << bit_shift;
+      if (bit_shift != 0 && source > 0) {
+        word |= value[static_cast<std::size_t>(source - 1)] >> (64 - bit_shift);
+      }
+      result[static_cast<std::size_t>(destination)] = word;
+    }
+    return result;
+  }
+
+  static constexpr void shift_right_one(Words& value) noexcept {
+    u64 carry = 0;
+    for (int i = 3; i >= 0; --i) {
+      const std::size_t index = static_cast<std::size_t>(i);
+      const u64 next_carry = value[index] & 1;
+      value[index] = (value[index] >> 1) | (carry << 63);
+      carry = next_carry;
+    }
+  }
+
+  static constexpr void set_bit(Words& value, int bit) noexcept {
+    assert(bit >= 0 && bit < 256);
+    const std::size_t word = static_cast<std::size_t>(bit / 64);
+    const unsigned offset = static_cast<unsigned>(bit % 64);
+    value[word] |= u64{1} << offset;
+  }
+
+  static std::pair<Words, Words> divide_magnitude(const Words& dividend,
+                                                  const Words& divisor) {
+    if (magnitude_is_zero(divisor)) {
+      throw std::invalid_argument("ExactInteger division by zero");
+    }
+    if (compare_magnitude(dividend, divisor) < 0) return {{}, dividend};
+
+    Words quotient{};
+    Words remainder = dividend;
+    int shift = magnitude_bit_width(dividend) - magnitude_bit_width(divisor);
+    Words shifted_divisor = shift_left(divisor, shift);
+    for (; shift >= 0; --shift) {
+      if (compare_magnitude(remainder, shifted_divisor) >= 0) {
+        remainder = subtract_magnitude(remainder, shifted_divisor);
+        set_bit(quotient, shift);
+      }
+      shift_right_one(shifted_divisor);
+    }
+    return {quotient, remainder};
+  }
+
+  static u64 divide_magnitude_by_small(Words& value, u64 divisor) noexcept {
+    assert(divisor != 0);
+    u64 remainder = 0;
+    for (std::size_t i = value.size(); i-- > 0;) {
+      const u128 current = (static_cast<u128>(remainder) << 64) | value[i];
+      value[i] = static_cast<u64>(current / divisor);
+      remainder = static_cast<u64>(current % divisor);
+    }
+    return remainder;
+  }
+
+  Words words_{};
+  bool negative_ = false;
+};
 
 template <typename T>
 inline constexpr bool is_bounded_integer_coordinate_v =
     (std::is_integral_v<std::remove_cv_t<T>> &&
-     !std::is_same_v<std::remove_cv_t<T>, bool> && sizeof(T) <= sizeof(u64)) ||
-    std::is_same_v<std::remove_cv_t<T>, ExactInteger>;
+     !std::is_same_v<std::remove_cv_t<T>, bool> && sizeof(T) <= sizeof(u64));
 
 template <typename T>
 inline constexpr bool is_exact_integer_coordinate_v =
     is_bounded_integer_coordinate_v<T> ||
-    std::is_same_v<std::remove_cv_t<T>, ArbitraryInteger>;
+    std::is_same_v<std::remove_cv_t<T>, ExactInteger>;
 
 // GCC 在严格 -std=c++23 下不把 __int128 计入 std::integral；几何坐标明确
-// 限制为标准 64 位以内整数、浮点数或上面的 Boost 整数，避免误走浮点谓词。
+// 限制为标准 64 位以内整数、浮点数或上面的 ExactInteger，避免误走浮点谓词。
 template <typename T>
 concept Coordinate = is_exact_integer_coordinate_v<T> ||
                      std::floating_point<std::remove_cv_t<T>>;
 
 template <typename T>
-using Calculation = std::conditional_t<
-    std::is_same_v<std::remove_cv_t<T>, ExactInteger> ||
-        std::is_same_v<std::remove_cv_t<T>, ArbitraryInteger>,
-    ArbitraryInteger,
-    std::conditional_t<is_exact_integer_coordinate_v<T>, ExactInteger,
-                       long double>>;
+using Calculation = std::conditional_t<is_exact_integer_coordinate_v<T>,
+                                       ExactInteger, long double>;
 
 template <Coordinate T>
 struct Point2 {
@@ -2828,8 +3301,10 @@ int sign(Calculation<T> value, f80 epsilon = DEFAULT_EPS) noexcept {
 }
 
 template <typename T>
-int orientation(const Point2<T>& first, const Point2<T>& second,
-                const Point2<T>& third, const Tolerance& tolerance) noexcept {
+int orientation(
+    const Point2<T>& first, const Point2<T>& second, const Point2<T>& third,
+    const Tolerance& tolerance) noexcept(!std::is_same_v<std::remove_cv_t<T>,
+                                                         ExactInteger>) {
   if constexpr (is_exact_integer_coordinate_v<T>) {
     return sign<T>(cross(first, second, third), 0);
   } else {
@@ -2841,8 +3316,10 @@ int orientation(const Point2<T>& first, const Point2<T>& second,
 }
 
 template <typename T>
-int orientation(const Point2<T>& first, const Point2<T>& second,
-                const Point2<T>& third, f80 epsilon = DEFAULT_EPS) noexcept {
+int orientation(
+    const Point2<T>& first, const Point2<T>& second, const Point2<T>& third,
+    f80 epsilon = DEFAULT_EPS) noexcept(!std::is_same_v<std::remove_cv_t<T>,
+                                                        ExactInteger>) {
   return orientation(first, second, third, Tolerance(epsilon));
 }
 
@@ -2957,8 +3434,10 @@ struct Segment2 {
 };
 
 template <typename T>
-bool on_segment(const Point2<T>& point, const Segment2<T>& segment,
-                f80 epsilon = DEFAULT_EPS) noexcept {
+bool on_segment(
+    const Point2<T>& point, const Segment2<T>& segment,
+    f80 epsilon = DEFAULT_EPS) noexcept(!std::is_same_v<std::remove_cv_t<T>,
+                                                        ExactInteger>) {
   if (orientation(segment.first, segment.second, point, epsilon) != 0) {
     return false;
   }
@@ -3047,9 +3526,10 @@ bool segments_intersect(const Segment2<T>& first, const Segment2<T>& second,
 }
 
 template <typename T>
-bool segments_properly_intersect(const Segment2<T>& first,
-                                 const Segment2<T>& second,
-                                 f80 epsilon = DEFAULT_EPS) noexcept {
+bool segments_properly_intersect(
+    const Segment2<T>& first, const Segment2<T>& second,
+    f80 epsilon = DEFAULT_EPS) noexcept(!std::is_same_v<std::remove_cv_t<T>,
+                                                        ExactInteger>) {
   const int o1 = orientation(first.first, first.second, second.first, epsilon);
   const int o2 = orientation(first.first, first.second, second.second, epsilon);
   const int o3 = orientation(second.first, second.second, first.first, epsilon);
@@ -3203,7 +3683,8 @@ Calculation<T> polygon_twice_signed_area(const vector<Point2<T>>& polygon) {
 }
 
 template <typename T>
-f80 polygon_area(const vector<Point2<T>>& polygon) noexcept {
+f80 polygon_area(const vector<Point2<T>>& polygon) noexcept(
+    !std::is_same_v<std::remove_cv_t<T>, ExactInteger>) {
   return std::abs(static_cast<f80>(polygon_twice_signed_area(polygon))) / 2;
 }
 
@@ -3949,7 +4430,7 @@ inline HalfPlaneIntersectionResult half_plane_intersection(
 }
 
 // ---------- 三维计算几何 ----------
-// 整数 dot/cross/triple 会先提升到 Calculation<T>；本模板中的 int256
+// 整数 dot/cross/triple 会先提升到 Calculation<T>；本模板中的 ExactInteger
 // 足以覆盖完整 i64 坐标的三维点积、叉积和四点定向体积。
 template <Coordinate T>
 struct Point3 {
@@ -4107,13 +4588,13 @@ using IPoint3D = IPoint3;
 
 template <typename T>
 Calculation<T> dot(const Point3<T>& left, const Point3<T>& right) {
-  using C = Calculation<T>;
-  return static_cast<C>(left.x) * static_cast<C>(right.x) +
-         static_cast<C>(left.y) * static_cast<C>(right.y) +
-         static_cast<C>(left.z) * static_cast<C>(right.z);
+    using C = Calculation<T>;
+    return static_cast<C>(left.x) * static_cast<C>(right.x) +
+           static_cast<C>(left.y) * static_cast<C>(right.y) +
+           static_cast<C>(left.z) * static_cast<C>(right.z);
 }
 
-// 对整数点返回 Point3<int256>，不会把叉积坐标窄化回 T。
+// 对整数点返回 Point3<ExactInteger>，不会把叉积坐标窄化回 T。
 template <typename T>
 Point3<Calculation<T>> cross(const Point3<T>& left, const Point3<T>& right) {
   using C = Calculation<T>;
@@ -4511,7 +4992,7 @@ f80 triangle_area(const Point3<T>& first, const Point3<T>& second,
   const C cx = ay * bz - az * by;
   const C cy = az * bx - ax * bz;
   const C cz = ax * by - ay * bx;
-  // 不在 int256 内平方叉积分量，避免完整 i64 输入的中间值超界。
+  // 不在 ExactInteger 内平方叉积分量，避免完整 i64 输入的中间值超界。
   return std::hypotl(std::hypotl(static_cast<f80>(cx), static_cast<f80>(cy)),
                      static_cast<f80>(cz)) /
          2;
